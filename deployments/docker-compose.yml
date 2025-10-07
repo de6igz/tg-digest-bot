@@ -23,36 +23,36 @@ services:
       - db
     environment:
       PG_DSN: ${PG_DSN}
-  bot:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile.bot
-    env_file: ../.env.example
-    depends_on:
-      - db
-      - cache
-  collector:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile.collector
-    env_file: ../.env.example
-    depends_on:
-      - db
-  scheduler:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile.scheduler
-    env_file: ../.env.example
-    depends_on:
-      - db
-  api:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile.api
-    env_file: ../.env.example
-    ports:
-      - "8080:8080"
-    depends_on:
-      - db
+#  bot:
+#    build:
+#      context: ..
+#      dockerfile: deployments/Dockerfile.bot
+#    env_file: ../.env.example
+#    depends_on:
+#      - db
+#      - cache
+#  collector:
+#    build:
+#      context: ..
+#      dockerfile: deployments/Dockerfile.collector
+#    env_file: ../.env.example
+#    depends_on:
+#      - db
+#  scheduler:
+#    build:
+#      context: ..
+#      dockerfile: deployments/Dockerfile.scheduler
+#    env_file: ../.env.example
+#    depends_on:
+#      - db
+#  api:
+#    build:
+#      context: ..
+#      dockerfile: deployments/Dockerfile.api
+#    env_file: ../.env.example
+#    ports:
+#      - "8080:8080"
+#    depends_on:
+#      - db
 volumes:
   db_data:

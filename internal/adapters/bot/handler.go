@@ -45,7 +45,7 @@ func (h *Handler) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	case strings.HasPrefix(text, "/start"):
 		h.reply(msg.Chat.ID, "👋 Добро пожаловать!", h.mainKeyboard())
 	case strings.HasPrefix(text, "/help"):
-		h.reply(msg.Chat.ID, "Команды: /add /list /digest_now /schedule /mute /unmute /clear_data", nil)
+		h.reply(msg.Chat.ID, "Команды: \n/add \n/list \n/digest_now \n/schedule \n/mute \n/unmute \n/clear_data", nil)
 	case strings.HasPrefix(text, "/add"):
 		alias := strings.TrimSpace(strings.TrimPrefix(text, "/add"))
 		h.handleAdd(ctx, msg.Chat.ID, msg.From.ID, alias)
