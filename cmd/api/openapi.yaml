@@ -1,0 +1,55 @@
+openapi: 3.0.0
+info:
+  title: TG Digest Bot API
+  version: 0.1.0
+  description: Минимальный API для Mini App
+servers:
+  - url: https://example.com
+paths:
+  /api/v1/digest/today:
+    get:
+      summary: Получить сегодняшний дайджест
+      responses:
+        '200':
+          description: Успешный ответ
+  /api/v1/digest/history:
+    get:
+      summary: Получить историю дайджестов
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 7
+      responses:
+        '200':
+          description: Успешный ответ
+  /api/v1/channels:
+    get:
+      summary: Список каналов пользователя
+      responses:
+        '200':
+          description: Успешный ответ
+    post:
+      summary: Добавить канал
+      responses:
+        '200':
+          description: Успешный ответ
+  /api/v1/channels/{id}:
+    delete:
+      summary: Удалить канал
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Удалено
+  /api/v1/settings/time:
+    put:
+      summary: Установить время доставки
+      responses:
+        '200':
+          description: Успешный ответ
