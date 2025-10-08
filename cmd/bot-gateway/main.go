@@ -38,7 +38,10 @@ func main() {
 	repoAdapter := repo.NewPostgres(pool)
 	summarizerAdapter := summarizer.NewSimple()
 	rankerAdapter := ranker.NewSimple(24)
-	collectorSession := &mtproto.SessionInMemory{}
+	if cfg.MTProto.SessionFile == "" {
+		logger.Fatal().Msg("не указан путь к MTProto-сессии (MTPROTO_SESSION_FILE)")
+	}
+	collectorSession := mtproto.NewSessionFile(cfg.MTProto.SessionFile)
 	collector, err := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("не удалось инициализировать MTProto клиент")

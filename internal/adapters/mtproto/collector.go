@@ -2,8 +2,13 @@ package mtproto
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gotd/td/session"
@@ -136,20 +141,92 @@ func normalizeAlias(alias string) (string, error) {
 	return trimmed, nil
 }
 
-// SessionInMemory хранит сессию в памяти (MVP).
+// SessionInMemory хранит сессию в памяти (используется в тестах).
 type SessionInMemory struct {
+	mu   sync.RWMutex
 	data []byte
 }
 
 // LoadSession загружает сессию.
 func (s *SessionInMemory) LoadSession(ctx context.Context) ([]byte, error) {
-	return s.data, nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.data) == 0 {
+		return nil, session.ErrNotFound
+	}
+	clone := make([]byte, len(s.data))
+	copy(clone, s.data)
+	return clone, nil
 }
 
 // StoreSession сохраняет сессию.
 func (s *SessionInMemory) StoreSession(ctx context.Context, data []byte) error {
-	s.data = data
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = append(s.data[:0], data...)
 	return nil
 }
 
-var _ session.Storage = (*SessionInMemory)(nil)
+// SessionFile хранит MTProto-сессию в файловой системе.
+type SessionFile struct {
+	path string
+	mu   sync.RWMutex
+}
+
+// NewSessionFile создаёт файловое хранилище MTProto-сессии.
+func NewSessionFile(path string) *SessionFile {
+	return &SessionFile{path: path}
+}
+
+// LoadSession читает сессию из файла.
+func (s *SessionFile) LoadSession(ctx context.Context) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.path == "" {
+		return nil, session.ErrNotFound
+	}
+
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, session.ErrNotFound
+		}
+		return nil, fmt.Errorf("чтение MTProto-сессии: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, session.ErrNotFound
+	}
+	clone := make([]byte, len(data))
+	copy(clone, data)
+	return clone, nil
+}
+
+// StoreSession пишет сессию в файл с правами 0600.
+func (s *SessionFile) StoreSession(ctx context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.path == "" {
+		return fmt.Errorf("путь к MTProto-сессии не задан")
+	}
+
+	dir := filepath.Dir(s.path)
+	if dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("создание каталога MTProto-сессии: %w", err)
+		}
+	}
+
+	tmp := make([]byte, len(data))
+	copy(tmp, data)
+	if err := os.WriteFile(s.path, tmp, 0o600); err != nil {
+		return fmt.Errorf("запись MTProto-сессии: %w", err)
+	}
+	return nil
+}
+
+var (
+	_ session.Storage = (*SessionInMemory)(nil)
+	_ session.Storage = (*SessionFile)(nil)
+)
