@@ -128,12 +128,13 @@ RETURNING id, tg_channel_id, alias, title, is_allowed, created_at
 }
 
 // ListUserChannels возвращает каналы пользователя.
-func (p *Postgres) ListUserChannels(userID int64, limit, offset int) ([]domain.Channel, error) {
+func (p *Postgres) ListUserChannels(userID int64, limit, offset int) ([]domain.UserChannel, error) {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
 	rows, err := p.pool.Query(ctx, `
-SELECT c.id, c.tg_channel_id, c.alias, c.title, c.is_allowed, c.created_at
+SELECT uc.id, uc.user_id, uc.channel_id, uc.muted, uc.added_at,
+       c.id, c.tg_channel_id, c.alias, c.title, c.is_allowed, c.created_at
 FROM user_channels uc JOIN channels c ON c.id = uc.channel_id
 WHERE uc.user_id=$1
 ORDER BY uc.added_at DESC
@@ -143,13 +144,14 @@ LIMIT $2 OFFSET $3
 		return nil, err
 	}
 	defer rows.Close()
-	var channels []domain.Channel
+	var channels []domain.UserChannel
 	for rows.Next() {
-		var ch domain.Channel
-		if err := rows.Scan(&ch.ID, &ch.TGChannelID, &ch.Alias, &ch.Title, &ch.IsAllowed, &ch.CreatedAt); err != nil {
+		var uc domain.UserChannel
+		if err := rows.Scan(&uc.ID, &uc.UserID, &uc.ChannelID, &uc.Muted, &uc.AddedAt,
+			&uc.Channel.ID, &uc.Channel.TGChannelID, &uc.Channel.Alias, &uc.Channel.Title, &uc.Channel.IsAllowed, &uc.Channel.CreatedAt); err != nil {
 			return nil, err
 		}
-		channels = append(channels, ch)
+		channels = append(channels, uc)
 	}
 	return channels, rows.Err()
 }

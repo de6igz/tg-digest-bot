@@ -151,6 +151,7 @@ type channelRow struct {
 }
 
 type userChannelRow struct {
+	ID        int64
 	ChannelID int64
 	Muted     bool
 	AddedAt   time.Time
@@ -192,22 +193,23 @@ type digestItemRow struct {
 }
 
 type fakeDB struct {
-	nextUserID     int64
-	users          map[int64]*userRow
-	userByTG       map[int64]int64
-	nextChannelID  int64
-	channels       map[int64]*channelRow
-	channelByAlias map[string]int64
-	userChannels   map[int64]map[int64]*userChannelRow
-	nextPostID     int64
-	posts          map[int64]*postRow
-	postByKey      map[string]int64
-	nextSummaryID  int64
-	summaries      map[int64]*summaryRow
-	nextDigestID   int64
-	digests        map[int64]*digestRow
-	digestByKey    map[string]int64
-	digestItems    map[int64]map[int64]*digestItemRow
+	nextUserID        int64
+	users             map[int64]*userRow
+	userByTG          map[int64]int64
+	nextChannelID     int64
+	channels          map[int64]*channelRow
+	channelByAlias    map[string]int64
+	userChannels      map[int64]map[int64]*userChannelRow
+	nextUserChannelID int64
+	nextPostID        int64
+	posts             map[int64]*postRow
+	postByKey         map[string]int64
+	nextSummaryID     int64
+	summaries         map[int64]*summaryRow
+	nextDigestID      int64
+	digests           map[int64]*digestRow
+	digestByKey       map[string]int64
+	digestItems       map[int64]map[int64]*digestItemRow
 }
 
 func newFakeDB() *fakeDB {
@@ -406,32 +408,29 @@ func (db *fakeDB) upsertChannel(tgID int64, alias, title string) *channelRow {
 	return ch
 }
 
-func (db *fakeDB) listUserChannels(userID int64) []*channelRow {
+type userChannelEntry struct {
+	link *userChannelRow
+	ch   *channelRow
+}
+
+func (db *fakeDB) listUserChannels(userID int64) []userChannelEntry {
 	links := db.userChannels[userID]
 	if len(links) == 0 {
 		return nil
 	}
-	type entry struct {
-		ch    *channelRow
-		added time.Time
-	}
-	var res []entry
+	var res []userChannelEntry
 	for cid, link := range links {
 		if ch, ok := db.channels[cid]; ok {
-			res = append(res, entry{ch: ch, added: link.AddedAt})
+			res = append(res, userChannelEntry{link: link, ch: ch})
 		}
 	}
 	sort.Slice(res, func(i, j int) bool {
-		if res[i].added.Equal(res[j].added) {
+		if res[i].link.AddedAt.Equal(res[j].link.AddedAt) {
 			return res[i].ch.ID > res[j].ch.ID
 		}
-		return res[i].added.After(res[j].added)
+		return res[i].link.AddedAt.After(res[j].link.AddedAt)
 	})
-	out := make([]*channelRow, len(res))
-	for i := range res {
-		out[i] = res[i].ch
-	}
-	return out
+	return res
 }
 
 func (db *fakeDB) attachChannel(userID, channelID int64) bool {
@@ -446,7 +445,8 @@ func (db *fakeDB) attachChannel(userID, channelID int64) bool {
 	if _, exists := m[channelID]; exists {
 		return false
 	}
-	m[channelID] = &userChannelRow{ChannelID: channelID, AddedAt: time.Now().UTC()}
+	db.nextUserChannelID++
+	m[channelID] = &userChannelRow{ID: db.nextUserChannelID, ChannelID: channelID, AddedAt: time.Now().UTC()}
 	return true
 }
 
@@ -777,18 +777,30 @@ func (db *fakeDB) query(query string, args ...any) (*pgx.Rows, error) {
 		userID := pgx.ToInt64(args[0])
 		limit := int(pgx.ToInt64(args[1]))
 		offset := int(pgx.ToInt64(args[2]))
-		channels := db.listUserChannels(userID)
-		if offset > len(channels) {
-			offset = len(channels)
+		entries := db.listUserChannels(userID)
+		if offset > len(entries) {
+			offset = len(entries)
 		}
 		end := offset + limit
-		if limit == 0 || end > len(channels) {
-			end = len(channels)
+		if limit == 0 || end > len(entries) {
+			end = len(entries)
 		}
-		subset := channels[offset:end]
+		subset := entries[offset:end]
 		rows := make([][]any, 0, len(subset))
-		for _, ch := range subset {
-			rows = append(rows, []any{ch.ID, ch.TGChannelID, ch.Alias, ch.Title, ch.IsAllowed, ch.CreatedAt})
+		for _, entry := range subset {
+			rows = append(rows, []any{
+				entry.link.ID,
+				userID,
+				entry.link.ChannelID,
+				entry.link.Muted,
+				entry.link.AddedAt,
+				entry.ch.ID,
+				entry.ch.TGChannelID,
+				entry.ch.Alias,
+				entry.ch.Title,
+				entry.ch.IsAllowed,
+				entry.ch.CreatedAt,
+			})
 		}
 		return pgx.NewRows(rows, nil), nil
 	case strings.HasPrefix(q, "select id, channel_id, tg_msg_id, published_at, url, text_trunc, raw_meta_json, hash, created_at from posts"):
