@@ -60,6 +60,13 @@ type RankedPost struct {
 	Summary Summary
 }
 
+// DigestOutline содержит результат анализа постов LLM-ранкером.
+type DigestOutline struct {
+	Overview string
+	Theses   []string
+	Items    []RankedPost
+}
+
 // DigestItem описывает одну позицию в дайджесте.
 type DigestItem struct {
 	Post    Post
@@ -72,6 +79,8 @@ type Digest struct {
 	ID          int64
 	UserID      int64
 	Date        time.Time
+	Overview    string
+	Theses      []string
 	Items       []DigestItem
 	DeliveredAt *time.Time
 }

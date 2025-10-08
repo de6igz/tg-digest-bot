@@ -2,6 +2,7 @@ package config
 
 import (
 	"log"
+	"time"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -35,6 +36,13 @@ type AppConfig struct {
 
 	Queues struct {
 		Digest string `envconfig:"DIGEST_QUEUE_KEY" default:"digest_jobs"`
+	} `envconfig:""`
+
+	OpenAI struct {
+		APIKey  string        `envconfig:"OPENAI_API_KEY"`
+		BaseURL string        `envconfig:"OPENAI_BASE_URL"`
+		Model   string        `envconfig:"OPENAI_MODEL" default:"gpt-4.1-mini"`
+		Timeout time.Duration `envconfig:"OPENAI_TIMEOUT" default:"45s"`
 	} `envconfig:""`
 }
 

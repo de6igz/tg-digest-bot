@@ -70,19 +70,19 @@ func (s *Service) BuildForDate(userID int64, date time.Time) (domain.Digest, err
 	if len(posts) == 0 {
 		return domain.Digest{UserID: user.ID, Date: date, Items: nil}, nil
 	}
-	ranked, err := s.ranker.Rank(posts)
+	outline, err := s.ranker.Rank(posts)
 	if err != nil {
 		return domain.Digest{}, fmt.Errorf("ранжирование: %w", err)
 	}
-	if len(ranked) == 0 {
-		return domain.Digest{UserID: user.ID, Date: date, Items: nil}, nil
+	if len(outline.Items) == 0 {
+		return domain.Digest{UserID: user.ID, Date: date, Overview: outline.Overview, Theses: outline.Theses, Items: nil}, nil
 	}
-	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].Score > ranked[j].Score })
-	if s.maxItems > 0 && len(ranked) > s.maxItems {
-		ranked = ranked[:s.maxItems]
+	sort.SliceStable(outline.Items, func(i, j int) bool { return outline.Items[i].Score > outline.Items[j].Score })
+	if s.maxItems > 0 && len(outline.Items) > s.maxItems {
+		outline.Items = outline.Items[:s.maxItems]
 	}
-	items := make([]domain.DigestItem, 0, len(ranked))
-	for idx, rp := range ranked {
+	items := make([]domain.DigestItem, 0, len(outline.Items))
+	for idx, rp := range outline.Items {
 		summary := rp.Summary
 		if summary.Headline == "" {
 			var err error
@@ -93,7 +93,7 @@ func (s *Service) BuildForDate(userID int64, date time.Time) (domain.Digest, err
 		}
 		items = append(items, domain.DigestItem{Post: rp.Post, Summary: summary, Rank: idx + 1})
 	}
-	return domain.Digest{UserID: user.ID, Date: date.Truncate(24 * time.Hour), Items: items}, nil
+	return domain.Digest{UserID: user.ID, Date: date.Truncate(24 * time.Hour), Overview: outline.Overview, Theses: outline.Theses, Items: items}, nil
 }
 
 // CollectNow запускает сбор постов у списка каналов.

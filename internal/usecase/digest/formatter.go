@@ -10,29 +10,47 @@ import (
 
 // FormatDigest формирует текстовое представление дайджеста для отправки пользователю.
 func FormatDigest(d domain.Digest) string {
-	var b strings.Builder
-	b.WriteString("📰 Дайджест за 24 часа\n\n")
-	for i, item := range d.Items {
-		title := strings.TrimSpace(item.Summary.Headline)
-		if title == "" {
-			title = fmt.Sprintf("Запись #%d", i+1)
-		}
-		b.WriteString(fmt.Sprintf("%d. <b>%s</b>\n", i+1, escapeHTML(title)))
-		if len(item.Summary.Bullets) > 0 {
-			for _, bullet := range item.Summary.Bullets {
-				trimmed := strings.TrimSpace(bullet)
-				if trimmed == "" {
-					continue
-				}
-				b.WriteString("• " + escapeHTML(trimmed) + "\n")
-			}
-		}
-		if item.Post.URL != "" {
-			b.WriteString(fmt.Sprintf("<a href=\"%s\">Читать</a>\n", html.EscapeString(item.Post.URL)))
-		}
-		b.WriteString("\n")
+	var sections []string
+	overview := strings.TrimSpace(d.Overview)
+	if overview != "" {
+		sections = append(sections, escapeHTML(overview))
 	}
-	return strings.TrimSpace(b.String())
+	if len(d.Theses) > 0 {
+		var thesesBuilder strings.Builder
+		thesesBuilder.WriteString("Самые главные тезисы:\n")
+		for _, thesis := range d.Theses {
+			trimmed := strings.TrimSpace(thesis)
+			if trimmed == "" {
+				continue
+			}
+			thesesBuilder.WriteString("- " + escapeHTML(trimmed) + "\n")
+		}
+		theses := strings.TrimSpace(thesesBuilder.String())
+		if theses != "" {
+			sections = append(sections, theses)
+		}
+	}
+	if len(d.Items) > 0 {
+		var linksBuilder strings.Builder
+		linksBuilder.WriteString("Читать подробнее:\n")
+		for idx, item := range d.Items {
+			label := strings.TrimSpace(item.Summary.Headline)
+			if label == "" {
+				label = fmt.Sprintf("Пост %d", idx+1)
+			}
+			url := strings.TrimSpace(item.Post.URL)
+			if url == "" {
+				linksBuilder.WriteString("- " + escapeHTML(label) + "\n")
+				continue
+			}
+			linksBuilder.WriteString(fmt.Sprintf("- <a href=\"%s\">%s</a>\n", html.EscapeString(url), escapeHTML(label)))
+		}
+		links := strings.TrimSpace(linksBuilder.String())
+		if links != "" {
+			sections = append(sections, links)
+		}
+	}
+	return strings.TrimSpace(strings.Join(sections, "\n\n"))
 }
 
 func escapeHTML(s string) string {

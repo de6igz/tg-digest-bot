@@ -20,9 +20,9 @@ type Collector interface {
 	Collect24h(channel Channel) ([]Post, error)
 }
 
-// Ranker вычисляет скоринг и возвращает отсортированные посты.
+// Ranker анализирует посты и возвращает дайджест.
 type Ranker interface {
-	Rank(posts []Post) ([]RankedPost, error)
+	Rank(posts []Post) (DigestOutline, error)
 }
 
 // Summarizer строит краткое содержание поста.

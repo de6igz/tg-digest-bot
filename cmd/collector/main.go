@@ -19,6 +19,7 @@ import (
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
 	applog "tg-digest-bot/internal/infra/log"
+	"tg-digest-bot/internal/infra/openai"
 	"tg-digest-bot/internal/infra/queue"
 	digestusecase "tg-digest-bot/internal/usecase/digest"
 )
@@ -65,8 +66,13 @@ func main() {
 		logger.Fatal().Err(err).Msg("collector: не удалось создать MTProto клиента")
 	}
 
-	summarizerAdapter := summarizer.NewOpenAIStub()
-	rankerAdapter := ranker.NewSimple(24)
+	if cfg.OpenAI.APIKey == "" {
+		logger.Fatal().Msg("collector: не указан ключ OpenAI (OPENAI_API_KEY)")
+	}
+	openaiClient := openai.NewClient(cfg.OpenAI.APIKey, cfg.OpenAI.BaseURL, cfg.OpenAI.Timeout)
+
+	summarizerAdapter := summarizer.NewOpenAI(openaiClient, cfg.OpenAI.Model, cfg.OpenAI.Timeout)
+	rankerAdapter := ranker.NewLLM(openaiClient, cfg.OpenAI.Model, cfg.OpenAI.Timeout, cfg.Limits.DigestMax)
 	digestService := digestusecase.NewService(repoAdapter, repoAdapter, repoAdapter, repoAdapter, summarizerAdapter, rankerAdapter, collector, cfg.Limits.DigestMax)
 
 	worker := &jobWorker{
