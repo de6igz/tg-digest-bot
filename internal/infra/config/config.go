@@ -32,6 +32,10 @@ type AppConfig struct {
 		FreeChannels int `envconfig:"FREE_CHANNELS_LIMIT" default:"5"`
 		DigestMax    int `envconfig:"DIGEST_MAX_ITEMS" default:"10"`
 	} `envconfig:""`
+
+	Queues struct {
+		Digest string `envconfig:"DIGEST_QUEUE_KEY" default:"digest_jobs"`
+	} `envconfig:""`
 }
 
 // Load загружает конфиг из окружения.
