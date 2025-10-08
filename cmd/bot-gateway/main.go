@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,6 +22,7 @@ import (
 	"tg-digest-bot/internal/infra/log"
 	"tg-digest-bot/internal/usecase/channels"
 	"tg-digest-bot/internal/usecase/digest"
+	"tg-digest-bot/internal/usecase/schedule"
 )
 
 func main() {
@@ -38,17 +38,24 @@ func main() {
 	repoAdapter := repo.NewPostgres(pool)
 	summarizerAdapter := summarizer.NewSimple()
 	rankerAdapter := ranker.NewSimple(24)
-	collectorSession := &mtproto.SessionInMemory{}
-	collector, _ := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger)
+	if cfg.MTProto.SessionFile == "" {
+		logger.Fatal().Msg("не указан путь к MTProto-сессии (MTPROTO_SESSION_FILE)")
+	}
+	collectorSession := mtproto.NewSessionFile(cfg.MTProto.SessionFile)
+	collector, err := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("не удалось инициализировать MTProto клиент")
+	}
 	digestService := digest.NewService(repoAdapter, repoAdapter, repoAdapter, repoAdapter, summarizerAdapter, rankerAdapter, collector, cfg.Limits.DigestMax)
-	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(logger), repoAdapter, cfg.Limits.FreeChannels)
+	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(collector.Client(), logger), repoAdapter, cfg.Limits.FreeChannels)
+	scheduleService := schedule.NewService(repoAdapter)
 
 	botAPI, err := tgbotapi.NewBotAPI(cfg.Telegram.Token)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("не удалось создать бота")
 	}
 
-	h := bot.NewHandler(botAPI, logger, channelService, digestService, repoAdapter, cfg.Limits.FreeChannels, cfg.Limits.DigestMax)
+	h := bot.NewHandler(botAPI, logger, channelService, digestService, scheduleService, repoAdapter, repoAdapter, cfg.Limits.FreeChannels, cfg.Limits.DigestMax)
 
 	r := chi.NewRouter()
 	r.Post("/bot/webhook", func(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +71,7 @@ func main() {
 	srv := &http.Server{Addr: ":8080", Handler: r}
 	go func() {
 		logger.Info().Msg("бот-гейтвей запущен")
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error().Err(err).Msg("HTTP сервер остановлен")
 		}
 	}()

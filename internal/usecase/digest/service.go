@@ -38,10 +38,11 @@ func (s *Service) BuildAndSendNow(userID int64) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.digestRepo.CreateDigest(digest); err != nil {
+	saved, err := s.digestRepo.CreateDigest(digest)
+	if err != nil {
 		return fmt.Errorf("сохранение дайджеста: %w", err)
 	}
-	return s.digestRepo.MarkDelivered(userID, digest.Date)
+	return s.digestRepo.MarkDelivered(saved.UserID, saved.Date)
 }
 
 // BuildForDate строит дайджест за указанный день.
@@ -50,16 +51,16 @@ func (s *Service) BuildForDate(userID int64, date time.Time) (domain.Digest, err
 	if err != nil {
 		return domain.Digest{}, fmt.Errorf("получение пользователя: %w", err)
 	}
-	channels, err := s.channels.ListUserChannels(user.ID, 100, 0)
+	userChannels, err := s.channels.ListUserChannels(user.ID, 100, 0)
 	if err != nil {
 		return domain.Digest{}, fmt.Errorf("каналы пользователя: %w", err)
 	}
-	if len(channels) == 0 {
+	if len(userChannels) == 0 {
 		return domain.Digest{}, ErrNoChannels
 	}
 	var channelIDs []int64
-	for _, ch := range channels {
-		channelIDs = append(channelIDs, ch.ID)
+	for _, ch := range userChannels {
+		channelIDs = append(channelIDs, ch.ChannelID)
 	}
 	since := date.Add(-24 * time.Hour)
 	posts, err := s.posts.ListRecentPosts(channelIDs, since)

@@ -22,8 +22,8 @@ func (s *stubRepo) DeleteUserData(int64) error             { return nil }
 func (s *stubRepo) UpsertChannel(domain.ChannelMeta) (domain.Channel, error) {
 	return domain.Channel{}, nil
 }
-func (s *stubRepo) ListUserChannels(int64, int, int) ([]domain.Channel, error) {
-	return []domain.Channel{{ID: 1, Alias: "demo"}}, nil
+func (s *stubRepo) ListUserChannels(int64, int, int) ([]domain.UserChannel, error) {
+	return []domain.UserChannel{{ChannelID: 1, Channel: domain.Channel{ID: 1, Alias: "demo"}}}, nil
 }
 func (s *stubRepo) AttachChannelToUser(int64, int64) error                      { return nil }
 func (s *stubRepo) DetachChannelFromUser(int64, int64) error                    { return nil }

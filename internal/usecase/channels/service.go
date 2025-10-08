@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	errChannelLimit   = errors.New("превышен лимит каналов")
-	errPrivateChannel = errors.New("канал приватный или недоступен")
-	errAliasInvalid   = errors.New("некорректный алиас")
+	ErrChannelLimit   = errors.New("превышен лимит каналов")
+	ErrPrivateChannel = errors.New("канал приватный или недоступен")
+	ErrAliasInvalid   = errors.New("некорректный алиас")
 )
 
 var aliasRegex = regexp.MustCompile(`(?i)^(?:@|https?://t\.me/|t\.me/)?([a-z0-9_]{5,})$`)
@@ -36,7 +36,7 @@ func ParseAlias(input string) (string, error) {
 	trim := strings.TrimSpace(input)
 	matches := aliasRegex.FindStringSubmatch(trim)
 	if len(matches) < 2 {
-		return "", errAliasInvalid
+		return "", ErrAliasInvalid
 	}
 	return strings.ToLower(matches[1]), nil
 }
@@ -56,14 +56,14 @@ func (s *Service) AddChannel(ctx context.Context, tgUserID int64, alias string) 
 		return domain.Channel{}, fmt.Errorf("подсчёт каналов: %w", err)
 	}
 	if s.limit > 0 && count >= s.limit {
-		return domain.Channel{}, errChannelLimit
+		return domain.Channel{}, ErrChannelLimit
 	}
 	meta, err := s.resolver.ResolvePublic(parsed)
 	if err != nil {
 		return domain.Channel{}, fmt.Errorf("резолв канала: %w", err)
 	}
 	if !meta.Public {
-		return domain.Channel{}, errPrivateChannel
+		return domain.Channel{}, ErrPrivateChannel
 	}
 	channel, err := s.repo.UpsertChannel(meta)
 	if err != nil {
@@ -76,7 +76,7 @@ func (s *Service) AddChannel(ctx context.Context, tgUserID int64, alias string) 
 }
 
 // ListChannels возвращает каналы пользователя.
-func (s *Service) ListChannels(ctx context.Context, tgUserID int64, limit, offset int) ([]domain.Channel, error) {
+func (s *Service) ListChannels(ctx context.Context, tgUserID int64, limit, offset int) ([]domain.UserChannel, error) {
 	user, err := s.userRepo.GetByTGID(tgUserID)
 	if err != nil {
 		return nil, fmt.Errorf("получение пользователя: %w", err)

@@ -21,7 +21,10 @@ func main() {
 	defer pool.Close()
 
 	repoAdapter := repo.NewPostgres(pool)
-	collector, err := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, &mtproto.SessionInMemory{}, log.Logger)
+	if cfg.MTProto.SessionFile == "" {
+		log.Logger.Fatal().Msg("не указан путь к MTProto-сессии (MTPROTO_SESSION_FILE)")
+	}
+	collector, err := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, mtproto.NewSessionFile(cfg.MTProto.SessionFile), log.Logger)
 	if err != nil {
 		log.Fatal().Err(err).Msg("collector: не удалось создать клиента")
 	}

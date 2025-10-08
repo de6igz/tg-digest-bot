@@ -30,13 +30,16 @@ type Chat struct {
 }
 
 type User struct {
-	ID int64
+	ID           int64
+	LanguageCode string
 }
 
 type MessageConfig struct {
-	ChatID      int64
-	Text        string
-	ReplyMarkup any
+	ChatID                int64
+	Text                  string
+	ReplyMarkup           any
+	ParseMode             string
+	DisableWebPagePreview bool
 }
 
 func NewMessage(chatID int64, text string) MessageConfig {
@@ -72,6 +75,10 @@ func NewInlineKeyboardButtonURL(text, url string) InlineKeyboardButton {
 func (b *BotAPI) Send(cfg MessageConfig) (Message, error) {
 	return Message{Chat: Chat{ID: cfg.ChatID}, Text: cfg.Text}, nil
 }
+
+const (
+	ModeHTML = "HTML"
+)
 
 type CallbackQuery struct {
 	ID      string

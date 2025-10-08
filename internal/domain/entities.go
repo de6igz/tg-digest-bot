@@ -30,6 +30,7 @@ type UserChannel struct {
 	ChannelID int64
 	Muted     bool
 	AddedAt   time.Time
+	Channel   Channel
 }
 
 // Post представляет сообщение канала.

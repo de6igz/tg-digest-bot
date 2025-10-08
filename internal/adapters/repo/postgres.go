@@ -30,13 +30,16 @@ func (p *Postgres) connCtx() (context.Context, context.CancelFunc) {
 
 // UpsertByTGID реализует domain.UserRepo.
 func (p *Postgres) UpsertByTGID(tgUserID int64, locale, tz string) (domain.User, error) {
-	tx, err := p.pool.BeginTx(context.Background(), pgx.TxOptions{})
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return domain.User{}, err
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(ctx)
 	var user domain.User
-	err = tx.QueryRow(context.Background(), `
+	err = tx.QueryRow(ctx, `
 INSERT INTO users (tg_user_id, locale, tz)
 VALUES ($1, COALESCE(NULLIF($2,''),'ru-RU'), COALESCE(NULLIF($3,''),'Europe/Amsterdam'))
 ON CONFLICT (tg_user_id) DO UPDATE SET locale = EXCLUDED.locale, tz = EXCLUDED.tz, updated_at = now()
@@ -45,7 +48,7 @@ RETURNING id, tg_user_id, locale, tz, daily_time, created_at, updated_at
 	if err != nil {
 		return domain.User{}, err
 	}
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return domain.User{}, err
 	}
 	return user, nil
@@ -54,7 +57,10 @@ RETURNING id, tg_user_id, locale, tz, daily_time, created_at, updated_at
 // GetByTGID возвращает пользователя по Telegram ID.
 func (p *Postgres) GetByTGID(tgUserID int64) (domain.User, error) {
 	var user domain.User
-	err := p.pool.QueryRow(context.Background(), `
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	err := p.pool.QueryRow(ctx, `
 SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at
 FROM users WHERE tg_user_id=$1
 `, tgUserID).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt)
@@ -66,7 +72,10 @@ FROM users WHERE tg_user_id=$1
 
 // ListForDailyTime выбирает пользователей, у которых локальное время совпадает.
 func (p *Postgres) ListForDailyTime(now time.Time) ([]domain.User, error) {
-	rows, err := p.pool.Query(context.Background(), `
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, `
 SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at
 FROM users WHERE daily_time = $1
 `, now.Format("15:04:05"))
@@ -87,20 +96,29 @@ FROM users WHERE daily_time = $1
 
 // UpdateDailyTime обновляет время.
 func (p *Postgres) UpdateDailyTime(userID int64, daily time.Time) error {
-	_, err := p.pool.Exec(context.Background(), `UPDATE users SET daily_time=$2, updated_at=now() WHERE id=$1`, userID, daily.Format("15:04:05"))
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	_, err := p.pool.Exec(ctx, `UPDATE users SET daily_time=$2, updated_at=now() WHERE id=$1`, userID, daily.Format("15:04:05"))
 	return err
 }
 
 // DeleteUserData удаляет данные пользователя.
 func (p *Postgres) DeleteUserData(userID int64) error {
-	_, err := p.pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, userID)
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	_, err := p.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, userID)
 	return err
 }
 
 // UpsertChannel сохраняет канал.
 func (p *Postgres) UpsertChannel(meta domain.ChannelMeta) (domain.Channel, error) {
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
 	var ch domain.Channel
-	err := p.pool.QueryRow(context.Background(), `
+	err := p.pool.QueryRow(ctx, `
 INSERT INTO channels (tg_channel_id, alias, title, is_allowed)
 VALUES ($1,$2,$3,true)
 ON CONFLICT(alias) DO UPDATE SET tg_channel_id=EXCLUDED.tg_channel_id, title=EXCLUDED.title, is_allowed=true
@@ -110,9 +128,13 @@ RETURNING id, tg_channel_id, alias, title, is_allowed, created_at
 }
 
 // ListUserChannels возвращает каналы пользователя.
-func (p *Postgres) ListUserChannels(userID int64, limit, offset int) ([]domain.Channel, error) {
-	rows, err := p.pool.Query(context.Background(), `
-SELECT c.id, c.tg_channel_id, c.alias, c.title, c.is_allowed, c.created_at
+func (p *Postgres) ListUserChannels(userID int64, limit, offset int) ([]domain.UserChannel, error) {
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, `
+SELECT uc.id, uc.user_id, uc.channel_id, uc.muted, uc.added_at,
+       c.id, c.tg_channel_id, c.alias, c.title, c.is_allowed, c.created_at
 FROM user_channels uc JOIN channels c ON c.id = uc.channel_id
 WHERE uc.user_id=$1
 ORDER BY uc.added_at DESC
@@ -122,20 +144,24 @@ LIMIT $2 OFFSET $3
 		return nil, err
 	}
 	defer rows.Close()
-	var channels []domain.Channel
+	var channels []domain.UserChannel
 	for rows.Next() {
-		var ch domain.Channel
-		if err := rows.Scan(&ch.ID, &ch.TGChannelID, &ch.Alias, &ch.Title, &ch.IsAllowed, &ch.CreatedAt); err != nil {
+		var uc domain.UserChannel
+		if err := rows.Scan(&uc.ID, &uc.UserID, &uc.ChannelID, &uc.Muted, &uc.AddedAt,
+			&uc.Channel.ID, &uc.Channel.TGChannelID, &uc.Channel.Alias, &uc.Channel.Title, &uc.Channel.IsAllowed, &uc.Channel.CreatedAt); err != nil {
 			return nil, err
 		}
-		channels = append(channels, ch)
+		channels = append(channels, uc)
 	}
 	return channels, rows.Err()
 }
 
 // AttachChannelToUser привязывает канал к пользователю.
 func (p *Postgres) AttachChannelToUser(userID, channelID int64) error {
-	_, err := p.pool.Exec(context.Background(), `
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	_, err := p.pool.Exec(ctx, `
 INSERT INTO user_channels (user_id, channel_id)
 VALUES ($1,$2)
 ON CONFLICT (user_id, channel_id) DO NOTHING
@@ -145,20 +171,29 @@ ON CONFLICT (user_id, channel_id) DO NOTHING
 
 // DetachChannelFromUser удаляет канал.
 func (p *Postgres) DetachChannelFromUser(userID, channelID int64) error {
-	_, err := p.pool.Exec(context.Background(), `DELETE FROM user_channels WHERE user_id=$1 AND channel_id=$2`, userID, channelID)
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	_, err := p.pool.Exec(ctx, `DELETE FROM user_channels WHERE user_id=$1 AND channel_id=$2`, userID, channelID)
 	return err
 }
 
 // SetMuted переключает mute.
 func (p *Postgres) SetMuted(userID, channelID int64, muted bool) error {
-	_, err := p.pool.Exec(context.Background(), `UPDATE user_channels SET muted=$3 WHERE user_id=$1 AND channel_id=$2`, userID, channelID, muted)
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	_, err := p.pool.Exec(ctx, `UPDATE user_channels SET muted=$3 WHERE user_id=$1 AND channel_id=$2`, userID, channelID, muted)
 	return err
 }
 
 // CountUserChannels считает каналы пользователя.
 func (p *Postgres) CountUserChannels(userID int64) (int, error) {
 	var count int
-	err := p.pool.QueryRow(context.Background(), `SELECT COUNT(*) FROM user_channels WHERE user_id=$1`, userID).Scan(&count)
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_channels WHERE user_id=$1`, userID).Scan(&count)
 	return count, err
 }
 
@@ -167,6 +202,9 @@ func (p *Postgres) SavePosts(channelID int64, posts []domain.Post) error {
 	if len(posts) == 0 {
 		return nil
 	}
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
 	batch := &pgx.Batch{}
 	for _, post := range posts {
 		batch.Queue(`
@@ -175,7 +213,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7)
 ON CONFLICT (channel_id, tg_msg_id) DO UPDATE SET text_trunc=EXCLUDED.text_trunc, raw_meta_json=EXCLUDED.raw_meta_json, hash=EXCLUDED.hash
 `, channelID, post.TGMsgID, post.PublishedAt, post.URL, post.Text, post.RawMetaJSON, post.Hash)
 	}
-	br := p.pool.SendBatch(context.Background(), batch)
+	br := p.pool.SendBatch(ctx, batch)
 	defer br.Close()
 	for range posts {
 		if _, err := br.Exec(); err != nil {
@@ -190,9 +228,13 @@ func (p *Postgres) ListRecentPosts(channelIDs []int64, since time.Time) ([]domai
 	if len(channelIDs) == 0 {
 		return nil, nil
 	}
-	rows, err := p.pool.Query(context.Background(), `
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, `
 SELECT id, channel_id, tg_msg_id, published_at, url, text_trunc, raw_meta_json, hash, created_at
 FROM posts WHERE channel_id = ANY($1) AND published_at >= $2
+ORDER BY published_at DESC
 `, channelIDs, since)
 	if err != nil {
 		return nil, err
@@ -211,12 +253,15 @@ FROM posts WHERE channel_id = ANY($1) AND published_at >= $2
 
 // SaveSummary сохраняет суммаризацию.
 func (p *Postgres) SaveSummary(postID int64, summary domain.Summary) (int64, error) {
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
 	var id int64
 	bullets, err := json.Marshal(summary.Bullets)
 	if err != nil {
 		return 0, err
 	}
-	err = p.pool.QueryRow(context.Background(), `
+	err = p.pool.QueryRow(ctx, `
         INSERT INTO post_summaries (post_id, headline, bullets_json, score)
         VALUES ($1,$2,$3,$4)
         RETURNING id
@@ -226,13 +271,16 @@ func (p *Postgres) SaveSummary(postID int64, summary domain.Summary) (int64, err
 
 // CreateDigest сохраняет дайджест и элементы.
 func (p *Postgres) CreateDigest(d domain.Digest) (domain.Digest, error) {
-	tx, err := p.pool.BeginTx(context.Background(), pgx.TxOptions{})
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return domain.Digest{}, err
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(ctx)
 	var digestID int64
-	err = tx.QueryRow(context.Background(), `
+	err = tx.QueryRow(ctx, `
 INSERT INTO user_digests (user_id, date, items_count)
 VALUES ($1,$2,$3)
 ON CONFLICT (user_id, date) DO UPDATE SET items_count = EXCLUDED.items_count
@@ -242,7 +290,7 @@ RETURNING id
 		return domain.Digest{}, err
 	}
 	for _, item := range d.Items {
-		_, err = tx.Exec(context.Background(), `
+		_, err = tx.Exec(ctx, `
 INSERT INTO user_digest_items (digest_id, post_id, rank)
 VALUES ($1,$2,$3)
 ON CONFLICT DO NOTHING
@@ -251,7 +299,7 @@ ON CONFLICT DO NOTHING
 			return domain.Digest{}, err
 		}
 	}
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return domain.Digest{}, err
 	}
 	d.ID = digestID
@@ -260,14 +308,20 @@ ON CONFLICT DO NOTHING
 
 // MarkDelivered помечает доставку.
 func (p *Postgres) MarkDelivered(userID int64, date time.Time) error {
-	_, err := p.pool.Exec(context.Background(), `UPDATE user_digests SET delivered_at=now() WHERE user_id=$1 AND date=$2`, userID, date)
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	_, err := p.pool.Exec(ctx, `UPDATE user_digests SET delivered_at=now() WHERE user_id=$1 AND date=$2`, userID, date)
 	return err
 }
 
 // WasDelivered проверяет наличие доставки.
 func (p *Postgres) WasDelivered(userID int64, date time.Time) (bool, error) {
 	var exists bool
-	err := p.pool.QueryRow(context.Background(), `SELECT delivered_at IS NOT NULL FROM user_digests WHERE user_id=$1 AND date=$2`, userID, date).Scan(&exists)
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	err := p.pool.QueryRow(ctx, `SELECT delivered_at IS NOT NULL FROM user_digests WHERE user_id=$1 AND date=$2`, userID, date).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -276,7 +330,10 @@ func (p *Postgres) WasDelivered(userID int64, date time.Time) (bool, error) {
 
 // ListDigestHistory возвращает историю.
 func (p *Postgres) ListDigestHistory(userID int64, fromDate time.Time) ([]domain.Digest, error) {
-	rows, err := p.pool.Query(context.Background(), `
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, `
         SELECT id, date, delivered_at
         FROM user_digests WHERE user_id=$1 AND date >= $2
         ORDER BY date DESC

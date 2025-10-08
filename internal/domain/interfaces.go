@@ -48,7 +48,7 @@ type UserRepo interface {
 // ChannelRepo управляет каналами.
 type ChannelRepo interface {
 	UpsertChannel(meta ChannelMeta) (Channel, error)
-	ListUserChannels(userID int64, limit, offset int) ([]Channel, error)
+	ListUserChannels(userID int64, limit, offset int) ([]UserChannel, error)
 	AttachChannelToUser(userID, channelID int64) error
 	DetachChannelFromUser(userID, channelID int64) error
 	SetMuted(userID, channelID int64, muted bool) error
