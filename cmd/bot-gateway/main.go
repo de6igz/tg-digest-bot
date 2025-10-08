@@ -39,9 +39,12 @@ func main() {
 	summarizerAdapter := summarizer.NewSimple()
 	rankerAdapter := ranker.NewSimple(24)
 	collectorSession := &mtproto.SessionInMemory{}
-	collector, _ := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger)
+	collector, err := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("не удалось инициализировать MTProto клиент")
+	}
 	digestService := digest.NewService(repoAdapter, repoAdapter, repoAdapter, repoAdapter, summarizerAdapter, rankerAdapter, collector, cfg.Limits.DigestMax)
-	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(logger), repoAdapter, cfg.Limits.FreeChannels)
+	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(collector.Client(), logger), repoAdapter, cfg.Limits.FreeChannels)
 	scheduleService := schedule.NewService(repoAdapter)
 
 	botAPI, err := tgbotapi.NewBotAPI(cfg.Telegram.Token)
