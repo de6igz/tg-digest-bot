@@ -31,6 +31,7 @@ type UserChannel struct {
 	Muted     bool
 	AddedAt   time.Time
 	Channel   Channel
+	Tags      []string
 }
 
 // Post представляет сообщение канала.

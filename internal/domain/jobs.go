@@ -20,6 +20,7 @@ type DigestJob struct {
 	UserTGID    int64          `json:"user_tg_id"`
 	ChatID      int64          `json:"chat_id"`
 	ChannelID   int64          `json:"channel_id,omitempty"`
+	Tags        []string       `json:"tags,omitempty"`
 	Date        time.Time      `json:"date"`
 	RequestedAt time.Time      `json:"requested_at"`
 	Cause       DigestJobCause `json:"cause"`

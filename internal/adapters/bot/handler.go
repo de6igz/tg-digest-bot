@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,6 +75,14 @@ func (h *Handler) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		h.handleDigestNow(ctx, msg.Chat.ID, msg.From.ID)
 	case strings.HasPrefix(text, "/schedule"):
 		h.handleSchedule(msg.Chat.ID)
+	case strings.HasPrefix(text, "/tags"):
+		h.handleTagsList(ctx, msg.Chat.ID, msg.From.ID)
+	case strings.HasPrefix(text, "/tag"):
+		payload := strings.TrimSpace(strings.TrimPrefix(text, "/tag"))
+		h.handleTagCommand(ctx, msg.Chat.ID, msg.From.ID, payload)
+	case strings.HasPrefix(text, "/digest_tag"):
+		payload := strings.TrimSpace(strings.TrimPrefix(text, "/digest_tag"))
+		h.handleDigestByTags(ctx, msg.Chat.ID, msg.From.ID, payload)
 	case strings.HasPrefix(text, "/mute"):
 		alias := strings.TrimSpace(strings.TrimPrefix(text, "/mute"))
 		h.handleMuteCommand(ctx, msg.Chat.ID, msg.From.ID, alias, true)
@@ -109,6 +119,9 @@ func (h *Handler) handleHelp(chatID int64) {
 		"/start — регистрация",
 		"/add @alias — добавить канал",
 		"/list — показать каналы",
+		"/tag @alias теги — добавить или обновить теги канала",
+		"/tags — список ваших тегов",
+		"/digest_tag теги — собрать дайджест по тегам",
 		"/digest_now — получить дайджест",
 		"/schedule — настроить время",
 		"/mute @alias — выключить уведомления",
@@ -160,7 +173,11 @@ func (h *Handler) handleList(ctx context.Context, chatID int64, tgUserID int64) 
 		if title == "" {
 			title = ch.Channel.Alias
 		}
-		fmt.Fprintf(&b, "%d. %s (@%s)\n", i+1, title, ch.Channel.Alias)
+		line := fmt.Sprintf("%d. %s (@%s)", i+1, title, ch.Channel.Alias)
+		if len(ch.Tags) > 0 {
+			line += fmt.Sprintf(" — теги: %s", strings.Join(ch.Tags, ", "))
+		}
+		b.WriteString(line + "\n")
 	}
 	keyboard := make([][]tgbotapi.InlineKeyboardButton, 0, len(channels))
 	for _, ch := range channels {
@@ -203,8 +220,149 @@ func (h *Handler) handleDigestNow(ctx context.Context, chatID int64, tgUserID in
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(button))
 	}
 
+	tagCounters := make(map[string]int)
+	for _, ch := range channels {
+		for _, tag := range ch.Tags {
+			trimmed := strings.TrimSpace(tag)
+			if trimmed == "" {
+				continue
+			}
+			tagCounters[trimmed]++
+		}
+	}
+	if len(tagCounters) > 0 {
+		tags := make([]string, 0, len(tagCounters))
+		for tag := range tagCounters {
+			tags = append(tags, tag)
+		}
+		sort.Strings(tags)
+		for _, tag := range tags {
+			encoded := url.QueryEscape(tag)
+			label := fmt.Sprintf("🏷 %s (%d)", tag, tagCounters[tag])
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("digest_tag:%s", encoded)),
+			))
+		}
+	}
+
 	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	h.reply(chatID, "Выберите дайджест за последние 24 часа", &markup)
+}
+
+func (h *Handler) handleTagCommand(ctx context.Context, chatID, tgUserID int64, payload string) {
+	if payload == "" {
+		h.reply(chatID, "Используйте формат: /tag @alias новости, аналитика", nil)
+		return
+	}
+	parts := strings.SplitN(payload, " ", 2)
+	aliasInput := strings.TrimSpace(parts[0])
+	if aliasInput == "" {
+		h.reply(chatID, "Укажите алиас канала после команды", nil)
+		return
+	}
+	parsed, err := channels.ParseAlias(aliasInput)
+	if err != nil {
+		h.reply(chatID, "Некорректный алиас", nil)
+		return
+	}
+	var rawTags string
+	if len(parts) > 1 {
+		rawTags = parts[1]
+	}
+	tags := parseTagsInput(rawTags)
+
+	list, err := h.channelUC.ListChannels(ctx, tgUserID, 100, 0)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Ошибка получения каналов: %v", err), nil)
+		return
+	}
+	var (
+		channelID int64
+		title     string
+	)
+	for _, ch := range list {
+		if strings.EqualFold(ch.Channel.Alias, parsed) {
+			channelID = ch.ChannelID
+			title = ch.Channel.Title
+			if title == "" {
+				title = ch.Channel.Alias
+			}
+			break
+		}
+	}
+	if channelID == 0 {
+		h.reply(chatID, "Канал не найден среди ваших подписок", nil)
+		return
+	}
+	if err := h.channelUC.UpdateChannelTags(ctx, tgUserID, channelID, tags); err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось сохранить теги: %v", err), nil)
+		return
+	}
+	if len(tags) == 0 {
+		h.reply(chatID, fmt.Sprintf("Теги для %s очищены", title), nil)
+		return
+	}
+	h.reply(chatID, fmt.Sprintf("Теги для %s обновлены: %s", title, strings.Join(tags, ", ")), nil)
+}
+
+func (h *Handler) handleTagsList(ctx context.Context, chatID, tgUserID int64) {
+	channelsList, err := h.channelUC.ListChannels(ctx, tgUserID, 100, 0)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить каналы: %v", err), nil)
+		return
+	}
+	if len(channelsList) == 0 {
+		h.reply(chatID, "У вас пока нет каналов", nil)
+		return
+	}
+	counter := make(map[string]int)
+	for _, uc := range channelsList {
+		for _, tag := range uc.Tags {
+			trimmed := strings.TrimSpace(tag)
+			if trimmed == "" {
+				continue
+			}
+			counter[trimmed]++
+		}
+	}
+	if len(counter) == 0 {
+		h.reply(chatID, "У каналов пока нет тегов. Добавьте их командой /tag", nil)
+		return
+	}
+	tags := make([]string, 0, len(counter))
+	for tag := range counter {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	var b strings.Builder
+	b.WriteString("Ваши теги:\n")
+	for _, tag := range tags {
+		b.WriteString(fmt.Sprintf("- %s — %d канал(а)\n", tag, counter[tag]))
+	}
+	b.WriteString("\nИспользуйте /digest_tag тег, чтобы получить дайджест.")
+	h.reply(chatID, b.String(), nil)
+}
+
+func (h *Handler) handleDigestByTags(ctx context.Context, chatID, tgUserID int64, payload string) {
+	tags := parseTagsInput(payload)
+	if len(tags) == 0 {
+		h.reply(chatID, "Укажите один или несколько тегов после команды", nil)
+		return
+	}
+	channelsList, err := h.channelUC.ListChannels(ctx, tgUserID, 100, 0)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить каналы: %v", err), nil)
+		return
+	}
+	if len(channelsList) == 0 {
+		h.reply(chatID, "Сначала добавьте хотя бы один канал", nil)
+		return
+	}
+	if !userHasTags(channelsList, tags) {
+		h.reply(chatID, "Среди ваших каналов нет таких тегов", nil)
+		return
+	}
+	h.enqueueDigestByTags(ctx, chatID, tgUserID, tags)
 }
 
 func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
@@ -219,8 +377,18 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 	case strings.HasPrefix(data, "digest_channel:"):
 		id := parseID(data)
 		h.enqueueDigest(ctx, cb.Message.Chat.ID, cb.From.ID, id)
+	case strings.HasPrefix(data, "digest_tag:"):
+		encoded := strings.TrimPrefix(data, "digest_tag:")
+		tag, err := url.QueryUnescape(encoded)
+		if err != nil {
+			h.reply(cb.Message.Chat.ID, "Не удалось распознать тег", nil)
+			return
+		}
+		h.enqueueDigestByTags(ctx, cb.Message.Chat.ID, cb.From.ID, []string{tag})
 	case data == "my_channels":
 		h.handleList(ctx, cb.Message.Chat.ID, cb.From.ID)
+	case data == "tags_list":
+		h.handleTagsList(ctx, cb.Message.Chat.ID, cb.From.ID)
 	case data == "set_time":
 		h.handleSchedule(cb.Message.Chat.ID)
 	case strings.HasPrefix(data, "set_time:"):
@@ -373,6 +541,76 @@ func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID
 	h.reply(chatID, "Собираем дайджест по всем каналам, отправим его в ближайшее время", nil)
 }
 
+func (h *Handler) enqueueDigestByTags(ctx context.Context, chatID, tgUserID int64, tags []string) {
+	cleaned := channels.NormalizeTags(tags)
+	if len(cleaned) == 0 {
+		h.reply(chatID, "Укажите теги для дайджеста", nil)
+		return
+	}
+	job := domain.DigestJob{
+		UserTGID:    tgUserID,
+		ChatID:      chatID,
+		Tags:        cleaned,
+		Date:        time.Now().UTC(),
+		RequestedAt: time.Now().UTC(),
+		Cause:       domain.DigestCauseManual,
+	}
+	if err := h.jobs.Enqueue(ctx, job); err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Strs("tags", cleaned).Msg("не удалось поставить задачу дайджеста")
+		h.reply(chatID, "Не удалось поставить дайджест в очередь, попробуйте позже", nil)
+		return
+	}
+	metrics.IncDigestOverall()
+	metrics.IncDigestForUser(tgUserID)
+	h.reply(chatID, fmt.Sprintf("Собираем дайджест по тегам: %s", strings.Join(cleaned, ", ")), nil)
+}
+
+func parseTagsInput(input string) []string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		switch r {
+		case ',', ';', '\n':
+			return true
+		default:
+			return false
+		}
+	})
+	tags := make([]string, 0, len(parts))
+	for _, part := range parts {
+		tag := strings.TrimSpace(part)
+		if tag == "" {
+			continue
+		}
+		tags = append(tags, tag)
+	}
+	return channels.NormalizeTags(tags)
+}
+
+func userHasTags(channelsList []domain.UserChannel, tags []string) bool {
+	if len(tags) == 0 {
+		return false
+	}
+	lookup := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		lookup[strings.ToLower(strings.TrimSpace(tag))] = struct{}{}
+	}
+	for _, ch := range channelsList {
+		for _, tag := range ch.Tags {
+			trimmed := strings.TrimSpace(tag)
+			if trimmed == "" {
+				continue
+			}
+			if _, ok := lookup[strings.ToLower(trimmed)]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (h *Handler) handleClearRequest(chatID, tgUserID int64) {
 	h.mu.Lock()
 	h.pendingDrop[tgUserID] = time.Now()
@@ -442,6 +680,9 @@ func (h *Handler) mainKeyboard() *tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📚 Мои каналы", "my_channels"),
 			tgbotapi.NewInlineKeyboardButtonData("📰 Получить дайджест", "digest_now"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🏷 Мои теги", "tags_list"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonURL("Открыть Mini App", "https://t.me"),

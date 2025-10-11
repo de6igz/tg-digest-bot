@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -124,7 +125,12 @@ func (w *jobWorker) Run(ctx context.Context) {
 }
 
 func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
-	jobLog := w.log.With().Int64("user", job.UserTGID).Str("cause", string(job.Cause)).Int64("channel", job.ChannelID).Logger()
+	jobLog := w.log.With().
+		Int64("user", job.UserTGID).
+		Str("cause", string(job.Cause)).
+		Int64("channel", job.ChannelID).
+		Strs("tags", job.Tags).
+		Logger()
 	if job.ChatID == 0 {
 		job.ChatID = job.UserTGID
 	}
@@ -148,7 +154,8 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 		return
 	}
 	var channels []domain.Channel
-	if job.ChannelID > 0 {
+	switch {
+	case job.ChannelID > 0:
 		for _, uc := range userChannels {
 			if uc.ChannelID == job.ChannelID {
 				channels = []domain.Channel{uc.Channel}
@@ -159,7 +166,19 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 			w.sendPlain(job.ChatID, "Канал не найден среди ваших подписок")
 			return
 		}
-	} else {
+	case len(job.Tags) > 0:
+		matched := make([]domain.Channel, 0)
+		for _, uc := range userChannels {
+			if matchesAnyTag(uc.Tags, job.Tags) {
+				matched = append(matched, uc.Channel)
+			}
+		}
+		if len(matched) == 0 {
+			w.sendPlain(job.ChatID, "Не найдено каналов с такими тегами")
+			return
+		}
+		channels = matched
+	default:
 		channels = make([]domain.Channel, 0, len(userChannels))
 		for _, uc := range userChannels {
 			channels = append(channels, uc.Channel)
@@ -174,9 +193,12 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 		digest domain.Digest
 		//err    error
 	)
-	if job.ChannelID > 0 {
+	switch {
+	case job.ChannelID > 0:
 		digest, err = w.service.BuildChannelForDate(job.UserTGID, job.ChannelID, job.Date)
-	} else {
+	case len(job.Tags) > 0:
+		digest, err = w.service.BuildTagsForDate(job.UserTGID, job.Tags, job.Date)
+	default:
 		digest, err = w.service.BuildForDate(job.UserTGID, job.Date)
 	}
 	if err != nil {
@@ -193,14 +215,17 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 		return
 	}
 	if len(digest.Items) == 0 {
-		if job.ChannelID > 0 {
+		switch {
+		case job.ChannelID > 0:
 			w.sendPlain(job.ChatID, "В выбранном канале за последние 24 часа ничего не найдено")
-		} else {
+		case len(job.Tags) > 0:
+			w.sendPlain(job.ChatID, "Не удалось найти новые посты по выбранным тегам")
+		default:
 			w.sendPlain(job.ChatID, "За последние 24 часа ничего не найдено")
 		}
 		return
 	}
-	if job.ChannelID == 0 {
+	if job.ChannelID == 0 && len(job.Tags) == 0 {
 		if err := w.persistDigest(digest); err != nil {
 			jobLog.Error().Err(err).Msg("collector: не удалось сохранить дайджест")
 		}
@@ -251,4 +276,28 @@ func (w *jobWorker) sendDigest(chatID int64, text string) error {
 		}
 	}
 	return nil
+}
+
+func matchesAnyTag(channelTags, requested []string) bool {
+	if len(channelTags) == 0 || len(requested) == 0 {
+		return false
+	}
+	lookup := make(map[string]struct{}, len(channelTags))
+	for _, tag := range channelTags {
+		trimmed := strings.TrimSpace(tag)
+		if trimmed == "" {
+			continue
+		}
+		lookup[strings.ToLower(trimmed)] = struct{}{}
+	}
+	for _, tag := range requested {
+		trimmed := strings.TrimSpace(tag)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := lookup[strings.ToLower(trimmed)]; ok {
+			return true
+		}
+	}
+	return false
 }

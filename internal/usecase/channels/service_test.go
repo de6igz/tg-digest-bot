@@ -24,3 +24,14 @@ func TestParseAlias(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeTags(t *testing.T) {
+	input := []string{"  Новости ", "игры", "Новости", "", "Игры"}
+	normalized := NormalizeTags(input)
+	if len(normalized) != 2 {
+		t.Fatalf("ожидали 2 тега, получили %d", len(normalized))
+	}
+	if normalized[0] != "Новости" || normalized[1] != "игры" {
+		t.Fatalf("неожиданное содержимое: %#v", normalized)
+	}
+}

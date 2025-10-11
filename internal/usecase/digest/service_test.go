@@ -14,33 +14,53 @@ type stubRepo struct {
 	userChannels []domain.UserChannel
 }
 
-func (s *stubRepo) UpsertByTGID(int64, string, string) (domain.User, error) { return s.user, nil }
-func (s *stubRepo) GetByTGID(int64) (domain.User, error)                    { return s.user, nil }
-func (s *stubRepo) ListForDailyTime(time.Time) ([]domain.User, error) {
+func (s *stubRepo) UpsertByTGID(_ int64, _ string, _ string) (domain.User, error) { return s.user, nil }
+func (s *stubRepo) GetByTGID(_ int64) (domain.User, error)                        { return s.user, nil }
+func (s *stubRepo) ListForDailyTime(_ time.Time) ([]domain.User, error) {
 	return []domain.User{s.user}, nil
 }
-func (s *stubRepo) UpdateDailyTime(int64, time.Time) error { return nil }
-func (s *stubRepo) DeleteUserData(int64) error             { return nil }
-func (s *stubRepo) UpsertChannel(domain.ChannelMeta) (domain.Channel, error) {
+func (s *stubRepo) UpdateDailyTime(_ int64, _ time.Time) error { return nil }
+func (s *stubRepo) DeleteUserData(_ int64) error               { return nil }
+func (s *stubRepo) UpsertChannel(_ domain.ChannelMeta) (domain.Channel, error) {
 	return domain.Channel{}, nil
 }
-func (s *stubRepo) ListUserChannels(int64, int, int) ([]domain.UserChannel, error) {
+func (s *stubRepo) ListUserChannels(_ int64, _ int, _ int) ([]domain.UserChannel, error) {
 	if len(s.userChannels) == 0 {
 		return []domain.UserChannel{{ChannelID: 1, Channel: domain.Channel{ID: 1, Alias: "demo"}}}, nil
 	}
 	return s.userChannels, nil
 }
-func (s *stubRepo) AttachChannelToUser(int64, int64) error                      { return nil }
-func (s *stubRepo) DetachChannelFromUser(int64, int64) error                    { return nil }
-func (s *stubRepo) SetMuted(int64, int64, bool) error                           { return nil }
-func (s *stubRepo) CountUserChannels(int64) (int, error)                        { return len(s.userChannels), nil }
-func (s *stubRepo) SavePosts(int64, []domain.Post) error                        { return nil }
-func (s *stubRepo) ListRecentPosts([]int64, time.Time) ([]domain.Post, error)   { return s.posts, nil }
-func (s *stubRepo) SaveSummary(int64, domain.Summary) (int64, error)            { return 1, nil }
-func (s *stubRepo) CreateDigest(d domain.Digest) (domain.Digest, error)         { return d, nil }
-func (s *stubRepo) MarkDelivered(int64, time.Time) error                        { return nil }
-func (s *stubRepo) WasDelivered(int64, time.Time) (bool, error)                 { return false, nil }
-func (s *stubRepo) ListDigestHistory(int64, time.Time) ([]domain.Digest, error) { return nil, nil }
+func (s *stubRepo) AttachChannelToUser(_ int64, _ int64) error   { return nil }
+func (s *stubRepo) DetachChannelFromUser(_ int64, _ int64) error { return nil }
+func (s *stubRepo) SetMuted(_ int64, _ int64, _ bool) error      { return nil }
+func (s *stubRepo) CountUserChannels(_ int64) (int, error)       { return len(s.userChannels), nil }
+func (s *stubRepo) UpdateUserChannelTags(userID, channelID int64, tags []string) error {
+	return nil
+}
+func (s *stubRepo) SavePosts(_ int64, _ []domain.Post) error { return nil }
+func (s *stubRepo) ListRecentPosts(channelIDs []int64, _ time.Time) ([]domain.Post, error) {
+	if len(channelIDs) == 0 {
+		return nil, nil
+	}
+	lookup := make(map[int64]struct{}, len(channelIDs))
+	for _, id := range channelIDs {
+		lookup[id] = struct{}{}
+	}
+	var filtered []domain.Post
+	for _, post := range s.posts {
+		if _, ok := lookup[post.ChannelID]; ok {
+			filtered = append(filtered, post)
+		}
+	}
+	return filtered, nil
+}
+func (s *stubRepo) SaveSummary(_ int64, _ domain.Summary) (int64, error) { return 1, nil }
+func (s *stubRepo) CreateDigest(d domain.Digest) (domain.Digest, error)  { return d, nil }
+func (s *stubRepo) MarkDelivered(_ int64, _ time.Time) error             { return nil }
+func (s *stubRepo) WasDelivered(_ int64, _ time.Time) (bool, error)      { return false, nil }
+func (s *stubRepo) ListDigestHistory(_ int64, _ time.Time) ([]domain.Digest, error) {
+	return nil, nil
+}
 
 func TestBuildForDate(t *testing.T) {
 	repo := &stubRepo{user: domain.User{ID: 1, TGUserID: 42}, posts: []domain.Post{{ID: 1, ChannelID: 1, URL: "https://t.me/a/1", Text: "пример", PublishedAt: time.Now()}}}
@@ -156,6 +176,35 @@ func TestBuildChannelForDate(t *testing.T) {
 
 	if len(ranker.captured) != len(posts) {
 		t.Fatalf("ожидали передачу всех постов канала")
+	}
+}
+
+func TestBuildTagsForDateFiltersChannels(t *testing.T) {
+	repo := &stubRepo{
+		user: domain.User{ID: 1, TGUserID: 42},
+		userChannels: []domain.UserChannel{
+			{ChannelID: 1, Tags: []string{"Новости"}},
+			{ChannelID: 2, Tags: []string{"Игры"}},
+		},
+		posts: []domain.Post{
+			{ID: 1, ChannelID: 1, RawMetaJSON: mustJSON(map[string]int{"views": 10})},
+			{ID: 2, ChannelID: 2, RawMetaJSON: mustJSON(map[string]int{"views": 10})},
+		},
+	}
+	sum := &fakeSummarizer{}
+	ranker := &fakeRanker{}
+	service := NewService(repo, repo, repo, repo, sum, ranker, nil, 10)
+
+	_, err := service.BuildTagsForDate(42, []string{"Новости"}, time.Now())
+	if err != nil {
+		t.Fatalf("не ожидали ошибку: %v", err)
+	}
+
+	if len(ranker.captured) != 1 {
+		t.Fatalf("ожидали один пост, получили %d", len(ranker.captured))
+	}
+	if ranker.captured[0].ChannelID != 1 {
+		t.Fatalf("ожидали пост только из канала с тегом 'Новости'")
 	}
 }
 
