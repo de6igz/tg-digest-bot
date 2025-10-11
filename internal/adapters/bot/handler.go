@@ -12,6 +12,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/rs/zerolog"
 
+	"tg-digest-bot/internal/adapters/telegram"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/usecase/channels"
 	"tg-digest-bot/internal/usecase/schedule"
@@ -404,12 +405,16 @@ func parseID(data string) int64 {
 }
 
 func (h *Handler) reply(chatID int64, text string, keyboard *tgbotapi.InlineKeyboardMarkup) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	if keyboard != nil {
-		msg.ReplyMarkup = keyboard
-	}
-	if _, err := h.bot.Send(msg); err != nil {
-		h.log.Error().Err(err).Msg("не удалось отправить сообщение")
+	parts := telegram.SplitMessage(text)
+	for i, part := range parts {
+		msg := tgbotapi.NewMessage(chatID, part)
+		if i == 0 && keyboard != nil {
+			msg.ReplyMarkup = keyboard
+		}
+		if _, err := h.bot.Send(msg); err != nil {
+			h.log.Error().Err(err).Msg("не удалось отправить сообщение")
+			return
+		}
 	}
 }
 

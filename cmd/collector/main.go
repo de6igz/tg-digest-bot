@@ -15,6 +15,7 @@ import (
 	"tg-digest-bot/internal/adapters/ranker"
 	"tg-digest-bot/internal/adapters/repo"
 	"tg-digest-bot/internal/adapters/summarizer"
+	"tg-digest-bot/internal/adapters/telegram"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
@@ -212,16 +213,25 @@ func (w *jobWorker) persistDigest(d domain.Digest) error {
 }
 
 func (w *jobWorker) sendPlain(chatID int64, text string) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	if _, err := w.bot.Send(msg); err != nil {
-		w.log.Error().Err(err).Int64("chat", chatID).Msg("collector: не удалось отправить сообщение")
+	parts := telegram.SplitMessage(text)
+	for _, part := range parts {
+		msg := tgbotapi.NewMessage(chatID, part)
+		if _, err := w.bot.Send(msg); err != nil {
+			w.log.Error().Err(err).Int64("chat", chatID).Msg("collector: не удалось отправить сообщение")
+			return
+		}
 	}
 }
 
 func (w *jobWorker) sendDigest(chatID int64, text string) error {
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = tgbotapi.ModeHTML
-	msg.DisableWebPagePreview = true
-	_, err := w.bot.Send(msg)
-	return err
+	parts := telegram.SplitMessage(text)
+	for _, part := range parts {
+		msg := tgbotapi.NewMessage(chatID, part)
+		msg.ParseMode = tgbotapi.ModeHTML
+		msg.DisableWebPagePreview = true
+		if _, err := w.bot.Send(msg); err != nil {
+			return err
+		}
+	}
+	return nil
 }
