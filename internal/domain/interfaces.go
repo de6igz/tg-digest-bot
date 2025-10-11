@@ -35,6 +35,7 @@ type DigestService interface {
 	BuildAndSendNow(userID int64) error
 	BuildForDate(userID int64, date time.Time) (Digest, error)
 	BuildChannelForDate(userID, channelID int64, date time.Time) (Digest, error)
+	BuildTagsForDate(userID int64, tags []string, date time.Time) (Digest, error)
 }
 
 // UserRepo управляет пользователями.
@@ -54,6 +55,7 @@ type ChannelRepo interface {
 	DetachChannelFromUser(userID, channelID int64) error
 	SetMuted(userID, channelID int64, muted bool) error
 	CountUserChannels(userID int64) (int, error)
+	UpdateUserChannelTags(userID, channelID int64, tags []string) error
 }
 
 // PostRepo управляет постами и суммаризациями.

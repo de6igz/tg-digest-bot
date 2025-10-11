@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"tg-digest-bot/internal/domain"
@@ -106,6 +107,43 @@ func (s *Service) BuildChannelForDate(userID, channelID int64, date time.Time) (
 	return s.buildDigestFromPosts(user, date, posts)
 }
 
+// BuildTagsForDate строит дайджест по каналам с указанными тегами.
+func (s *Service) BuildTagsForDate(userID int64, tags []string, date time.Time) (domain.Digest, error) {
+	cleaned := normalizeRequestedTags(tags)
+	if len(cleaned) == 0 {
+		return s.BuildForDate(userID, date)
+	}
+
+	user, userChannels, err := s.loadUserAndChannels(userID)
+	if err != nil {
+		return domain.Digest{}, err
+	}
+
+	channelIDs := make([]int64, 0, len(userChannels))
+	for _, ch := range userChannels {
+		if len(ch.Tags) == 0 {
+			continue
+		}
+		if hasAnyTag(ch.Tags, cleaned) {
+			channelIDs = append(channelIDs, ch.ChannelID)
+		}
+	}
+
+	if len(channelIDs) == 0 {
+		return domain.Digest{UserID: user.ID, Date: date.Truncate(24 * time.Hour)}, nil
+	}
+
+	since := date.Add(-24 * time.Hour)
+	posts, err := s.posts.ListRecentPosts(channelIDs, since)
+	if err != nil {
+		return domain.Digest{}, fmt.Errorf("получение постов: %w", err)
+	}
+
+	posts = filterTopPosts(posts, topPostsPerChannel)
+
+	return s.buildDigestFromPosts(user, date, posts)
+}
+
 // CollectNow запускает сбор постов у списка каналов.
 func (s *Service) CollectNow(ctx context.Context, channels []domain.Channel) error {
 	for _, ch := range channels {
@@ -198,6 +236,44 @@ func filterTopPosts(posts []domain.Post, perChannelLimit int) []domain.Post {
 	}
 
 	return filtered
+}
+
+func normalizeRequestedTags(tags []string) []string {
+	cleaned := make([]string, 0, len(tags))
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		trimmed := strings.TrimSpace(tag)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleaned = append(cleaned, trimmed)
+	}
+	return cleaned
+}
+
+func hasAnyTag(channelTags, requested []string) bool {
+	if len(channelTags) == 0 || len(requested) == 0 {
+		return false
+	}
+	lookup := make(map[string]struct{}, len(channelTags))
+	for _, tag := range channelTags {
+		trimmed := strings.TrimSpace(tag)
+		if trimmed == "" {
+			continue
+		}
+		lookup[strings.ToLower(trimmed)] = struct{}{}
+	}
+	for _, tag := range requested {
+		if _, ok := lookup[strings.ToLower(tag)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func engagementScore(post domain.Post) float64 {

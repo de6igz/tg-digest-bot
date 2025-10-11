@@ -152,7 +152,7 @@ func (p *Postgres) ListUserChannels(userID int64, limit, offset int) ([]domain.U
 
 	start := time.Now()
 	rows, err := p.pool.Query(ctx, `
-SELECT uc.id, uc.user_id, uc.channel_id, uc.muted, uc.added_at,
+SELECT uc.id, uc.user_id, uc.channel_id, uc.muted, uc.added_at, uc.tags,
        c.id, c.tg_channel_id, c.alias, c.title, c.is_allowed, c.created_at
 FROM user_channels uc JOIN channels c ON c.id = uc.channel_id
 WHERE uc.user_id=$1
@@ -167,7 +167,7 @@ LIMIT $2 OFFSET $3
 	var channels []domain.UserChannel
 	for rows.Next() {
 		var uc domain.UserChannel
-		if err := rows.Scan(&uc.ID, &uc.UserID, &uc.ChannelID, &uc.Muted, &uc.AddedAt,
+		if err := rows.Scan(&uc.ID, &uc.UserID, &uc.ChannelID, &uc.Muted, &uc.AddedAt, &uc.Tags,
 			&uc.Channel.ID, &uc.Channel.TGChannelID, &uc.Channel.Alias, &uc.Channel.Title, &uc.Channel.IsAllowed, &uc.Channel.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -223,6 +223,17 @@ func (p *Postgres) CountUserChannels(userID int64) (int, error) {
 	err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_channels WHERE user_id=$1`, userID).Scan(&count)
 	metrics.ObserveNetworkRequest("postgres", "user_channels_count", "user_channels", start, err)
 	return count, err
+}
+
+// UpdateUserChannelTags обновляет список тегов пользовательского канала.
+func (p *Postgres) UpdateUserChannelTags(userID, channelID int64, tags []string) error {
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	start := time.Now()
+	_, err := p.pool.Exec(ctx, `UPDATE user_channels SET tags=$3 WHERE user_id=$1 AND channel_id=$2`, userID, channelID, tags)
+	metrics.ObserveNetworkRequest("postgres", "user_channels_update_tags", "user_channels", start, err)
+	return err
 }
 
 // SavePosts сохраняет посты батчем.

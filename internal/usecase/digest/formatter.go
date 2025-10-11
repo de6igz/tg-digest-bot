@@ -36,9 +36,9 @@ func FormatDigest(d domain.Digest) string {
 		sections = append(sections, topics)
 	}
 
-	//if links := buildLinksSection(d.Items); links != "" {
-	//	sections = append(sections, links)
-	//}
+	if links := buildLinksSection(d.Items); links != "" {
+		sections = append(sections, links)
+	}
 
 	return strings.TrimSpace(strings.Join(sections, "\n\n"))
 }
