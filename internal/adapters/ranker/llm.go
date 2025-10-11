@@ -50,9 +50,11 @@ type llmDigestResponse struct {
 }
 
 type llmDigestPostRef struct {
-	PostID  json.Number `json:"post_id"`
-	Title   string      `json:"title"`
-	Summary string      `json:"summary"`
+	PostID       json.Number `json:"post_id"`
+	Title        string      `json:"title"`
+	Summary      string      `json:"summary"`
+	Topic        string      `json:"topic"`
+	TopicSummary string      `json:"topic_summary"`
 }
 
 // Rank анализирует посты с помощью LLM и формирует дайджест.
@@ -86,9 +88,10 @@ func (r *LLMRanker) Rank(posts []domain.Post) (domain.DigestOutline, error) {
 	userPrompt := fmt.Sprintf(`Проанализируй список постов телеграм-каналов пользователя и подготовь короткий дайджест на русском языке.
 1. Сформулируй один абзац, который кратко описывает общую картину дня.
 2. Выдели 3-5 ключевых тезисов — короткие предложения, отражающие самые важные идеи.
-3. Выбери до %d постов, которые стоит прочитать, и для каждого придумай ёмкий заголовок и 1-2 предложения пояснения.
-4. Всегда используй поле "id" из входных данных как "post_id" в ответе и не придумывай новых идентификаторов.
-5. Ответ верни строго в формате JSON: {"overview": "...", "theses": ["..."], "posts": [{"post_id": 1, "title": "...", "summary": "..."}]}.
+3. Сгруппируй посты по темам: для каждой темы придумай короткий заголовок (2-4 слова) и одно предложение-описание, а также укажи тему у каждого выбранного поста.
+4. Выбери до %d постов, которые стоит прочитать, и для каждого придумай ёмкий заголовок и 1-2 предложения пояснения.
+5. Всегда используй поле "id" из входных данных как "post_id" в ответе и не придумывай новых идентификаторов.
+6. Ответ верни строго в формате JSON: {"overview": "...", "theses": ["..."], "posts": [{"post_id": 1, "title": "...", "summary": "...", "topic": "...", "topic_summary": "..."}]}.
 
 Вот данные постов в JSON:
 %s`, r.maxItems, string(body))
@@ -148,7 +151,9 @@ func (r *LLMRanker) Rank(posts []domain.Post) (domain.DigestOutline, error) {
 			Post:  post,
 			Score: float64(r.maxItems - len(outline.Items)),
 			Summary: domain.Summary{
-				Headline: headline,
+				Headline:     headline,
+				Topic:        strings.TrimSpace(ref.Topic),
+				TopicSummary: strings.TrimSpace(ref.TopicSummary),
 			},
 		}
 		if summary != "" {
