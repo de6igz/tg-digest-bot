@@ -1,21 +1,31 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"os/signal"
+	"syscall"
 	"time"
 
 	chi "github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 
 	"tg-digest-bot/internal/adapters/repo"
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
 	httpinfra "tg-digest-bot/internal/infra/http"
+	"tg-digest-bot/internal/infra/metrics"
 )
 
 func main() {
 	cfg := config.Load()
+
+	metrics.MustRegister(prometheus.DefaultRegisterer)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	pool, err := db.Connect(cfg.PGDSN)
 	if err != nil {
 		log.Fatal().Err(err).Msg("api: нет подключения к БД")
@@ -57,10 +67,18 @@ func main() {
 	})
 
 	srv := &http.Server{Addr: ":8080", Handler: r}
-	log.Info().Msg("api: старт")
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal().Err(err).Msg("api: сервер остановлен")
-	}
+	metrics.StartServer(ctx, log.With().Str("component", "metrics").Logger(), ":9090")
+	go func() {
+		log.Info().Msg("api: старт")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error().Err(err).Msg("api: сервер остановлен")
+		}
+	}()
+	<-ctx.Done()
+	log.Info().Msg("api: остановка")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shutdownCtx)
 
 	_ = repoAdapter
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 
@@ -31,8 +32,12 @@ func main() {
 	cfg := config.Load()
 	logger := applog.NewLogger(cfg.AppEnv)
 
+	metrics.MustRegister(prometheus.DefaultRegisterer)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	metrics.StartServer(ctx, logger.With().Str("component", "metrics").Logger(), ":9090")
 
 	pool, err := db.Connect(cfg.PGDSN)
 	if err != nil {

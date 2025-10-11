@@ -1,10 +1,15 @@
 package metrics
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
 )
 
 var (
@@ -65,8 +70,8 @@ var (
 )
 
 // MustRegister регистрирует метрики.
-func MustRegister(registry *prometheus.Registry) {
-	registry.MustRegister(
+func MustRegister(registerer prometheus.Registerer) {
+	registerer.MustRegister(
 		CollectorRPS,
 		CollectorErrors,
 		DigestBuildSeconds,
@@ -79,6 +84,39 @@ func MustRegister(registry *prometheus.Registry) {
 		DigestRequestsByUser,
 		DigestRequestsByChannel,
 	)
+}
+
+// StartServer запускает HTTP сервер с эндпоинтом /metrics.
+func StartServer(ctx context.Context, logger zerolog.Logger, addr string) {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+	}
+
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-shutdownCtx.Done():
+		}
+		shutdownTimeout, timeoutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer timeoutCancel()
+		if err := srv.Shutdown(shutdownTimeout); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error().Err(err).Msg("metrics: graceful shutdown failed")
+		}
+	}()
+
+	go func() {
+		logger.Info().Str("addr", addr).Msg("metrics: server started")
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error().Err(err).Msg("metrics: server stopped")
+		}
+		cancel()
+	}()
 }
 
 // ObserveNetworkRequest записывает длительность и статус сетевого запроса.

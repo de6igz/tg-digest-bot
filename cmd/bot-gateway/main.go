@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	chi "github.com/go-chi/chi/v5"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
 	"tg-digest-bot/internal/adapters/bot"
@@ -19,6 +20,7 @@ import (
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
 	"tg-digest-bot/internal/infra/log"
+	"tg-digest-bot/internal/infra/metrics"
 	"tg-digest-bot/internal/infra/queue"
 	"tg-digest-bot/internal/usecase/channels"
 	"tg-digest-bot/internal/usecase/schedule"
@@ -27,6 +29,11 @@ import (
 func main() {
 	cfg := config.Load()
 	logger := log.NewLogger(cfg.AppEnv)
+
+	metrics.MustRegister(prometheus.DefaultRegisterer)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
 
 	pool, err := db.Connect(cfg.PGDSN)
 	if err != nil {
@@ -40,7 +47,7 @@ func main() {
 	}
 	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer redisClient.Close()
-	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+	if err := redisClient.Ping(ctx).Err(); err != nil {
 		logger.Fatal().Err(err).Msg("не удалось подключиться к Redis")
 	}
 	digestQueue := queue.NewRedisDigestQueue(redisClient, cfg.Queues.Digest)
@@ -70,6 +77,8 @@ func main() {
 	})
 
 	srv := &http.Server{Addr: ":8080", Handler: r}
+
+	metrics.StartServer(ctx, logger.With().Str("component", "metrics").Logger(), ":9090")
 	go func() {
 		logger.Info().Msg("бот-гейтвей запущен")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -77,13 +86,11 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
-	<-stop
+	<-ctx.Done()
 	logger.Info().Msg("остановка бота")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*1e9)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(ctx)
+	_ = srv.Shutdown(shutdownCtx)
 }
 
 var _ domain.UserRepo = (*repo.Postgres)(nil)
