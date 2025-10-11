@@ -41,8 +41,8 @@ type AppConfig struct {
 	OpenAI struct {
 		APIKey  string        `envconfig:"OPENAI_API_KEY"`
 		BaseURL string        `envconfig:"OPENAI_BASE_URL"`
-		Model   string        `envconfig:"OPENAI_MODEL" default:"gpt-4.1-mini"`
-		Timeout time.Duration `envconfig:"OPENAI_TIMEOUT" default:"45s"`
+		Model   string        `envconfig:"OPENAI_MODEL" default:"qwen3:4b"`
+		Timeout time.Duration `envconfig:"OPENAI_TIMEOUT" default:"120s"`
 	} `envconfig:""`
 }
 

@@ -25,7 +25,7 @@ type OpenAI struct {
 // NewOpenAI создаёт провайдер суммаризации.
 func NewOpenAI(client chatClient, model string, timeout time.Duration) *OpenAI {
 	if model == "" {
-		model = "gpt-4.1-mini"
+		model = "qwen3:4b"
 	}
 	if timeout <= 0 {
 		timeout = 15 * time.Second

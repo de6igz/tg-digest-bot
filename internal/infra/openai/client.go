@@ -13,6 +13,7 @@ import (
 
 const defaultBaseURL = "https://api.openai.com/v1"
 
+// const defaultBaseURL = "http://localhost:11434/v1" // for local testing with mock server
 // Client выполняет Chat Completions запросы.
 type Client struct {
 	http    *http.Client

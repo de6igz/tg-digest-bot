@@ -94,9 +94,10 @@ func (r *LLMRanker) Rank(posts []domain.Post) (domain.DigestOutline, error) {
 %s`, r.maxItems, string(body))
 
 	req := openai.ChatCompletionRequest{
-		Model:       r.model,
-		Temperature: 0.2,
-		MaxTokens:   800,
+		//Model:       r.model,
+		Model: "gpt-5-mini",
+		//Temperature: 0.2,
+		//MaxTokens:   8000,
 		Messages: []openai.ChatMessage{
 			{
 				Role:    openai.RoleSystem,
