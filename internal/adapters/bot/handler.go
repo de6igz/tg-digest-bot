@@ -33,6 +33,7 @@ type Handler struct {
 	maxDigest   int
 	mu          sync.Mutex
 	pendingDrop map[int64]time.Time
+	pendingTime map[int64]struct{}
 }
 
 // NewHandler создаёт обработчик.
@@ -47,6 +48,7 @@ func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Se
 		freeLimit:   freeLimit,
 		maxDigest:   maxDigest,
 		pendingDrop: make(map[int64]time.Time),
+		pendingTime: make(map[int64]struct{}),
 	}
 }
 
@@ -61,6 +63,11 @@ func (h *Handler) HandleUpdate(ctx context.Context, upd tgbotapi.Update) {
 
 func (h *Handler) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
+	if msg.From != nil && !strings.HasPrefix(text, "/") {
+		if h.tryHandleScheduleInput(ctx, msg.Chat.ID, msg.From.ID, text) {
+			return
+		}
+	}
 	switch {
 	case strings.HasPrefix(text, "/start"):
 		h.handleStart(ctx, msg)
@@ -74,7 +81,16 @@ func (h *Handler) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	case strings.HasPrefix(text, "/digest_now"):
 		h.handleDigestNow(ctx, msg.Chat.ID, msg.From.ID)
 	case strings.HasPrefix(text, "/schedule"):
-		h.handleSchedule(msg.Chat.ID)
+		if msg.From == nil {
+			h.reply(msg.Chat.ID, "Не удалось определить пользователя", nil)
+			return
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(text, "/schedule"))
+		if payload == "" {
+			h.handleSchedule(msg.Chat.ID, msg.From.ID)
+			return
+		}
+		h.handleSetTime(ctx, msg.Chat.ID, msg.From.ID, payload)
 	case strings.HasPrefix(text, "/tags"):
 		h.handleTagsList(ctx, msg.Chat.ID, msg.From.ID)
 	case strings.HasPrefix(text, "/tag"):
@@ -378,7 +394,7 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 	case data == "tags_list":
 		h.handleTagsList(ctx, cb.Message.Chat.ID, cb.From.ID)
 	case data == "set_time":
-		h.handleSchedule(cb.Message.Chat.ID)
+		h.handleSchedule(cb.Message.Chat.ID, cb.From.ID)
 	case strings.HasPrefix(data, "set_time:"):
 		value := strings.TrimPrefix(data, "set_time:")
 		h.handleSetTime(ctx, cb.Message.Chat.ID, cb.From.ID, value)
@@ -402,11 +418,30 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 	}
 }
 
-func (h *Handler) handleSchedule(chatID int64) {
-	h.reply(chatID, "Выберите время ежедневной доставки", SchedulePresetKeyboard())
+func (h *Handler) handleSchedule(chatID, tgUserID int64) {
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	h.setPendingSchedule(tgUserID)
+	current := user.DailyTime.Format("15:04")
+	tzSuffix := ""
+	if user.Timezone != "" {
+		tzSuffix = fmt.Sprintf(" (%s)", user.Timezone)
+	}
+	message := []string{
+		fmt.Sprintf("Текущее время ежедневной рассылки: %s%s.", current, tzSuffix),
+		"",
+		"Выберите подходящий вариант ниже или укажите своё время.",
+		"Можно просто отправить 21:30 или воспользоваться командой /schedule 21:30.",
+		"Формат — ЧЧ:ММ, 24-часовой.",
+	}
+	h.reply(chatID, strings.Join(message, "\n"), SchedulePresetKeyboard())
 }
 
 func (h *Handler) handleSetTime(ctx context.Context, chatID, tgUserID int64, value string) {
+	value = strings.TrimSpace(value)
 	tm, err := ParseLocalTime(value)
 	if err != nil {
 		h.reply(chatID, "Некорректный формат времени. Используйте ЧЧ:ММ", nil)
@@ -416,7 +451,35 @@ func (h *Handler) handleSetTime(ctx context.Context, chatID, tgUserID int64, val
 		h.reply(chatID, fmt.Sprintf("Не удалось сохранить время: %v", err), nil)
 		return
 	}
-	h.reply(chatID, fmt.Sprintf("Время доставки установлено на %s", value), nil)
+	h.clearPendingSchedule(tgUserID)
+	h.reply(chatID, fmt.Sprintf("Время доставки установлено на %s по вашему локальному времени", tm.Format("15:04")), nil)
+}
+
+func (h *Handler) tryHandleScheduleInput(ctx context.Context, chatID, tgUserID int64, value string) bool {
+	h.mu.Lock()
+	_, pending := h.pendingTime[tgUserID]
+	h.mu.Unlock()
+	if !pending {
+		return false
+	}
+	if strings.TrimSpace(value) == "" {
+		h.reply(chatID, "Отправьте время в формате ЧЧ:ММ, например 21:30", nil)
+		return true
+	}
+	h.handleSetTime(ctx, chatID, tgUserID, value)
+	return true
+}
+
+func (h *Handler) setPendingSchedule(tgUserID int64) {
+	h.mu.Lock()
+	h.pendingTime[tgUserID] = struct{}{}
+	h.mu.Unlock()
+}
+
+func (h *Handler) clearPendingSchedule(tgUserID int64) {
+	h.mu.Lock()
+	delete(h.pendingTime, tgUserID)
+	h.mu.Unlock()
 }
 
 func (h *Handler) handleMuteCommand(ctx context.Context, chatID, tgUserID int64, alias string, mute bool) {
@@ -690,7 +753,7 @@ func (h *Handler) buildStartMessage() string {
 		"2. 🏷 Назначьте теги: /tag @alias новости, аналитика.",
 		"3. 📰 Соберите дайджест за последние 24 часа — кнопка \"Дайджест\" или команда /digest_now.",
 		"   Чтобы получить дайджест по темам, используйте /digest_tag новости.",
-		"4. 🗓 Настройте автоматическую рассылку — кнопка \"Расписание\" или команда /schedule.",
+		"4. 🗓 Настройте автоматическую рассылку — кнопка \"Расписание\" или команда /schedule 21:30.",
 		"",
 		"Под кнопкой \"ℹ️ Помощь\" вы найдёте полный список команд и примеров.",
 	}
@@ -714,7 +777,8 @@ func (h *Handler) buildHelpMessage() string {
 		"• /digest_tag новости — дайджест только по каналам с тегом \"новости\".",
 		"",
 		"Расписание и данные:",
-		"• /schedule — выбрать время автоматической рассылки.",
+		"• /schedule — открыть выбор времени.",
+		"• /schedule 21:30 — задать своё время рассылки.",
 		"• /clear_data — удалить аккаунт и все сохранённые данные.",
 		"",
 		"Подсказка: используйте меню под сообщением, чтобы быстро перейти к нужному действию.",
@@ -736,16 +800,23 @@ func (h *Handler) buildTagDigestHint() string {
 
 // SchedulePresetKeyboard возвращает готовые кнопки выбора времени.
 func SchedulePresetKeyboard() *tgbotapi.InlineKeyboardMarkup {
-	row := tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("07:30", "set_time:07:30"),
-		tgbotapi.NewInlineKeyboardButtonData("09:00", "set_time:09:00"),
-		tgbotapi.NewInlineKeyboardButtonData("19:00", "set_time:19:00"),
-	)
-	markup := tgbotapi.NewInlineKeyboardMarkup(row)
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("07:30", "set_time:07:30"),
+			tgbotapi.NewInlineKeyboardButtonData("09:00", "set_time:09:00"),
+			tgbotapi.NewInlineKeyboardButtonData("12:00", "set_time:12:00"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("18:00", "set_time:18:00"),
+			tgbotapi.NewInlineKeyboardButtonData("19:00", "set_time:19:00"),
+			tgbotapi.NewInlineKeyboardButtonData("21:00", "set_time:21:00"),
+		),
+	}
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	return &markup
 }
 
 // ParseLocalTime парсит время формата ЧЧ:ММ.
 func ParseLocalTime(input string) (time.Time, error) {
-	return time.Parse("15:04", input)
+	return time.Parse("15:04", strings.TrimSpace(input))
 }
