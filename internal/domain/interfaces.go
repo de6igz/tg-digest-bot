@@ -34,6 +34,7 @@ type Summarizer interface {
 type DigestService interface {
 	BuildAndSendNow(userID int64) error
 	BuildForDate(userID int64, date time.Time) (Digest, error)
+	BuildChannelForDate(userID, channelID int64, date time.Time) (Digest, error)
 }
 
 // UserRepo управляет пользователями.
