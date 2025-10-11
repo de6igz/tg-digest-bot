@@ -175,12 +175,17 @@ func filterTopPosts(posts []domain.Post, perChannelLimit int) []domain.Post {
 	}
 
 	grouped := make(map[int64][]domain.Post)
+	order := make([]int64, 0)
 	for _, post := range posts {
+		if _, ok := grouped[post.ChannelID]; !ok {
+			order = append(order, post.ChannelID)
+		}
 		grouped[post.ChannelID] = append(grouped[post.ChannelID], post)
 	}
 
 	filtered := make([]domain.Post, 0, len(posts))
-	for _, channelPosts := range grouped {
+	for _, channelID := range order {
+		channelPosts := grouped[channelID]
 		sort.SliceStable(channelPosts, func(i, j int) bool {
 			return engagementScore(channelPosts[i]) > engagementScore(channelPosts[j])
 		})

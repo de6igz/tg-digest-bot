@@ -177,19 +177,32 @@ func (h *Handler) handleList(ctx context.Context, chatID int64, tgUserID int64) 
 }
 
 func (h *Handler) handleDigestNow(ctx context.Context, chatID int64, tgUserID int64) {
-	job := domain.DigestJob{
-		UserTGID:    tgUserID,
-		ChatID:      chatID,
-		Date:        time.Now().UTC(),
-		RequestedAt: time.Now().UTC(),
-		Cause:       domain.DigestCauseManual,
-	}
-	if err := h.jobs.Enqueue(ctx, job); err != nil {
-		h.log.Error().Err(err).Int64("user", tgUserID).Msg("не удалось поставить задачу дайджеста")
-		h.reply(chatID, "Не удалось поставить дайджест в очередь, попробуйте позже", nil)
+	channels, err := h.channelUC.ListChannels(ctx, tgUserID, 100, 0)
+	if err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("не удалось получить каналы пользователя")
+		h.reply(chatID, "Не удалось получить список каналов. Попробуйте позже", nil)
 		return
 	}
-	h.reply(chatID, "Собираем дайджест, отправим его в ближайшее время", nil)
+	if len(channels) == 0 {
+		h.reply(chatID, "Сначала добавьте хотя бы один канал командой /add", nil)
+		return
+	}
+
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(channels)+1)
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("📰 Все каналы", "digest_all"),
+	))
+	for _, ch := range channels {
+		title := ch.Channel.Title
+		if title == "" {
+			title = ch.Channel.Alias
+		}
+		button := tgbotapi.NewInlineKeyboardButtonData(title, fmt.Sprintf("digest_channel:%d", ch.ChannelID))
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(button))
+	}
+
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	h.reply(chatID, "Выберите дайджест за последние 24 часа", &markup)
 }
 
 func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
@@ -199,6 +212,11 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 		h.reply(cb.Message.Chat.ID, "Отправьте /add @alias", nil)
 	case data == "digest_now":
 		h.handleDigestNow(ctx, cb.Message.Chat.ID, cb.From.ID)
+	case data == "digest_all":
+		h.enqueueDigest(ctx, cb.Message.Chat.ID, cb.From.ID, 0)
+	case strings.HasPrefix(data, "digest_channel:"):
+		id := parseID(data)
+		h.enqueueDigest(ctx, cb.Message.Chat.ID, cb.From.ID, id)
 	case data == "my_channels":
 		h.handleList(ctx, cb.Message.Chat.ID, cb.From.ID)
 	case data == "set_time":
@@ -293,6 +311,53 @@ func (h *Handler) handleDeleteChannel(ctx context.Context, chatID, tgUserID, cha
 		return
 	}
 	h.reply(chatID, "Канал удалён", nil)
+}
+
+func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID int64) {
+	job := domain.DigestJob{
+		UserTGID:    tgUserID,
+		ChatID:      chatID,
+		ChannelID:   channelID,
+		Date:        time.Now().UTC(),
+		RequestedAt: time.Now().UTC(),
+		Cause:       domain.DigestCauseManual,
+	}
+
+	var channelName string
+	if channelID > 0 {
+		channels, err := h.channelUC.ListChannels(ctx, tgUserID, 100, 0)
+		if err != nil {
+			h.log.Error().Err(err).Int64("user", tgUserID).Msg("не удалось получить каналы пользователя")
+			h.reply(chatID, "Не удалось получить список каналов. Попробуйте позже", nil)
+			return
+		}
+		for _, ch := range channels {
+			if ch.ChannelID == channelID {
+				channelName = ch.Channel.Title
+				if channelName == "" {
+					channelName = ch.Channel.Alias
+				}
+				break
+			}
+		}
+		if channelName == "" {
+			h.reply(chatID, "Канал не найден среди ваших подписок", nil)
+			return
+		}
+	}
+
+	if err := h.jobs.Enqueue(ctx, job); err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Int64("channel", channelID).Msg("не удалось поставить задачу дайджеста")
+		h.reply(chatID, "Не удалось поставить дайджест в очередь, попробуйте позже", nil)
+		return
+	}
+
+	if channelID > 0 {
+		h.reply(chatID, fmt.Sprintf("Собираем дайджест по каналу %s, отправим его в ближайшее время", channelName), nil)
+		return
+	}
+
+	h.reply(chatID, "Собираем дайджест по всем каналам, отправим его в ближайшее время", nil)
 }
 
 func (h *Handler) handleClearRequest(chatID, tgUserID int64) {

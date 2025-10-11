@@ -91,6 +91,49 @@ func TestBuildForDateFiltersTopPosts(t *testing.T) {
 	}
 }
 
+func TestBuildForDateFiltersTopPostsPerChannel(t *testing.T) {
+	var posts []domain.Post
+	for i := 0; i < 12; i++ {
+		raw := mustJSON(map[string]int{"views": i})
+		posts = append(posts, domain.Post{ID: int64(i + 1), ChannelID: 1, RawMetaJSON: raw})
+	}
+	for i := 0; i < 12; i++ {
+		raw := mustJSON(map[string]int{"views": i})
+		posts = append(posts, domain.Post{ID: int64(100 + i), ChannelID: 2, RawMetaJSON: raw})
+	}
+
+	repo := &stubRepo{
+		user:  domain.User{ID: 1, TGUserID: 42},
+		posts: posts,
+		userChannels: []domain.UserChannel{
+			{ChannelID: 1, Channel: domain.Channel{ID: 1, Alias: "first"}},
+			{ChannelID: 2, Channel: domain.Channel{ID: 2, Alias: "second"}},
+		},
+	}
+	sum := &fakeSummarizer{}
+	ranker := &fakeRanker{}
+	service := NewService(repo, repo, repo, repo, sum, ranker, nil, 10)
+
+	_, err := service.BuildForDate(42, time.Now())
+	if err != nil {
+		t.Fatalf("не ожидали ошибку: %v", err)
+	}
+
+	if len(ranker.captured) != 20 {
+		t.Fatalf("ожидали 20 постов после фильтра, получили %d", len(ranker.captured))
+	}
+
+	if ranker.captured[0].ID != 12 {
+		t.Fatalf("ожидали, что первым будет самый популярный пост первого канала")
+	}
+	if ranker.captured[9].ID != 3 {
+		t.Fatalf("ожидали, что последний в первой группе будет пост с ID 3, получили %d", ranker.captured[9].ID)
+	}
+	if ranker.captured[10].ID != 111 {
+		t.Fatalf("ожидали, что первым во второй группе будет пост с ID 111, получили %d", ranker.captured[10].ID)
+	}
+}
+
 func TestBuildChannelForDate(t *testing.T) {
 	var posts []domain.Post
 	for i := 0; i < 5; i++ {
