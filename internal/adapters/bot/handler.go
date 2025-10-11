@@ -108,27 +108,11 @@ func (h *Handler) handleStart(ctx context.Context, msg *tgbotapi.Message) {
 		h.reply(msg.Chat.ID, fmt.Sprintf("Ошибка сохранения профиля: %v", err), nil)
 		return
 	}
-	welcome := "👋 Добро пожаловать! Управляйте каналами и получайте дайджесты." +
-		fmt.Sprintf("\nЛимит каналов: %d. Используйте кнопки ниже.", h.freeLimit)
-	h.reply(msg.Chat.ID, welcome, h.mainKeyboard())
+	h.reply(msg.Chat.ID, h.buildStartMessage(), h.mainKeyboard())
 }
 
 func (h *Handler) handleHelp(chatID int64) {
-	help := strings.Join([]string{
-		"Команды:",
-		"/start — регистрация",
-		"/add @alias — добавить канал",
-		"/list — показать каналы",
-		"/tag @alias теги — добавить или обновить теги канала",
-		"/tags — список ваших тегов",
-		"/digest_tag теги — собрать дайджест по тегам",
-		"/digest_now — получить дайджест",
-		"/schedule — настроить время",
-		"/mute @alias — выключить уведомления",
-		"/unmute @alias — включить уведомления",
-		"/clear_data — удалить данные",
-	}, "\n")
-	h.reply(chatID, help, nil)
+	h.reply(chatID, h.buildHelpMessage(), h.mainKeyboard())
 }
 
 func (h *Handler) handleAdd(ctx context.Context, chatID int64, tgUserID int64, alias string) {
@@ -370,6 +354,8 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 	switch {
 	case data == "add_channel":
 		h.reply(cb.Message.Chat.ID, "Отправьте /add @alias", nil)
+	case data == "help_menu":
+		h.reply(cb.Message.Chat.ID, h.buildHelpMessage(), h.mainKeyboard())
 	case data == "digest_now":
 		h.handleDigestNow(ctx, cb.Message.Chat.ID, cb.From.ID)
 	case data == "digest_all":
@@ -377,6 +363,8 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 	case strings.HasPrefix(data, "digest_channel:"):
 		id := parseID(data)
 		h.enqueueDigest(ctx, cb.Message.Chat.ID, cb.From.ID, id)
+	case data == "digest_tag_menu":
+		h.reply(cb.Message.Chat.ID, h.buildTagDigestHint(), nil)
 	case strings.HasPrefix(data, "digest_tag:"):
 		encoded := strings.TrimPrefix(data, "digest_tag:")
 		tag, err := url.QueryUnescape(encoded)
@@ -675,20 +663,75 @@ func (h *Handler) mainKeyboard() *tgbotapi.InlineKeyboardMarkup {
 	buttons := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("➕ Добавить канал", "add_channel"),
-			tgbotapi.NewInlineKeyboardButtonData("🕘 Настроить время", "set_time"),
-		),
-		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("📚 Мои каналы", "my_channels"),
-			tgbotapi.NewInlineKeyboardButtonData("📰 Получить дайджест", "digest_now"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("🏷 Мои теги", "tags_list"),
+			tgbotapi.NewInlineKeyboardButtonData("📰 Дайджест", "digest_now"),
+			tgbotapi.NewInlineKeyboardButtonData("📌 Дайджест по тегам", "digest_tag_menu"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonURL("Открыть Mini App", "https://t.me"),
+			tgbotapi.NewInlineKeyboardButtonData("🏷 Теги каналов", "tags_list"),
+			tgbotapi.NewInlineKeyboardButtonData("🗓 Расписание", "set_time"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("ℹ️ Помощь", "help_menu"),
 		),
 	)
 	return &buttons
+}
+
+func (h *Handler) buildStartMessage() string {
+	lines := []string{
+		"👋 Добро пожаловать в TG Digest Bot!",
+		"",
+		"Как пользоваться ботом:",
+		"1. ➕ Добавьте канал — кнопка \"Добавить канал\" или команда /add @alias.",
+		fmt.Sprintf("   Вам доступно до %d каналов.", h.freeLimit),
+		"2. 🏷 Назначьте теги: /tag @alias новости, аналитика.",
+		"3. 📰 Соберите дайджест за последние 24 часа — кнопка \"Дайджест\" или команда /digest_now.",
+		"   Чтобы получить дайджест по темам, используйте /digest_tag новости.",
+		"4. 🗓 Настройте автоматическую рассылку — кнопка \"Расписание\" или команда /schedule.",
+		"",
+		"Под кнопкой \"ℹ️ Помощь\" вы найдёте полный список команд и примеров.",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (h *Handler) buildHelpMessage() string {
+	sections := []string{
+		"📖 Основные команды и примеры:",
+		"",
+		"Управление каналами:",
+		"• /add @toporlive — добавить канал.",
+		"• /list — показать сохранённые каналы и действия с ними.",
+		"• /mute @toporlive — временно убрать канал из дайджеста.",
+		"• /unmute @toporlive — вернуть канал в дайджест.",
+		"• /tag @toporlive новости, аналитика — задать теги.",
+		"• /tags — посмотреть список ваших тегов.",
+		"",
+		"Дайджесты:",
+		"• /digest_now — собрать дайджест из всех немьютнутых каналов.",
+		"• /digest_tag новости — дайджест только по каналам с тегом \"новости\".",
+		"",
+		"Расписание и данные:",
+		"• /schedule — выбрать время автоматической рассылки.",
+		"• /clear_data — удалить аккаунт и все сохранённые данные.",
+		"",
+		"Подсказка: используйте меню под сообщением, чтобы быстро перейти к нужному действию.",
+	}
+	return strings.Join(sections, "\n")
+}
+
+func (h *Handler) buildTagDigestHint() string {
+	lines := []string{
+		"📌 Как получить дайджест по тегам:",
+		"1. Задайте теги каналу: /tag @toporlive новости, аналитика.",
+		"2. Посмотрите доступные теги через кнопку \"🏷 Теги каналов\" или команду /tags.",
+		"3. Запросите подборку: /digest_tag новости или несколько тегов через запятую.",
+		"",
+		"Совет: теги не чувствительны к регистру, но старайтесь писать их одинаково, чтобы группировать каналы по темам.",
+	}
+	return strings.Join(lines, "\n")
 }
 
 // SchedulePresetKeyboard возвращает готовые кнопки выбора времени.
