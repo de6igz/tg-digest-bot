@@ -34,7 +34,7 @@ var (
 	NetworkRequestDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "network_request_duration_seconds",
 		Help:    "Длительность сетевых запросов",
-		Buckets: prometheus.DefBuckets,
+		Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150, 155, 160, 165, 170, 175, 180, 185, 190, 195, 200, 250, 300, 350, 400, 450, 500, 550, 600},
 	}, []string{"component", "operation", "target", "status"})
 
 	NetworkRequestTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
