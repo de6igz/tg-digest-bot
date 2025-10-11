@@ -165,7 +165,7 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 	}
 	var (
 		digest domain.Digest
-		err    error
+		//err    error
 	)
 	if job.ChannelID > 0 {
 		digest, err = w.service.BuildChannelForDate(job.UserTGID, job.ChannelID, job.Date)
@@ -200,7 +200,11 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 	}
 	message := digestusecase.FormatDigest(digest)
 	if err := w.sendDigest(job.ChatID, message); err != nil {
+		if job.Cause == domain.DigestCauseManual {
+			w.sendPlain(job.ChatID, "Не удалось собрать дайджест, попробуйте позже.")
+		}
 		jobLog.Error().Err(err).Msg("collector: отправка дайджеста")
+
 	}
 }
 
