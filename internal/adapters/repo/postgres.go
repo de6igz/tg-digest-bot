@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"tg-digest-bot/internal/domain"
+	"tg-digest-bot/internal/infra/metrics"
 )
 
 // Postgres реализует репозитории на основе pgxpool.
@@ -33,22 +34,29 @@ func (p *Postgres) UpsertByTGID(tgUserID int64, locale, tz string) (domain.User,
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{})
+	metrics.ObserveNetworkRequest("postgres", "begin_tx", "users", start, err)
 	if err != nil {
 		return domain.User{}, err
 	}
 	defer tx.Rollback(ctx)
 	var user domain.User
+	start = time.Now()
 	err = tx.QueryRow(ctx, `
 INSERT INTO users (tg_user_id, locale, tz)
 VALUES ($1, COALESCE(NULLIF($2,''),'ru-RU'), COALESCE(NULLIF($3,''),'Europe/Amsterdam'))
 ON CONFLICT (tg_user_id) DO UPDATE SET locale = EXCLUDED.locale, tz = EXCLUDED.tz, updated_at = now()
 RETURNING id, tg_user_id, locale, tz, daily_time, created_at, updated_at
 `, tgUserID, locale, tz).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt)
+	metrics.ObserveNetworkRequest("postgres", "users_upsert", "users", start, err)
 	if err != nil {
 		return domain.User{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	start = time.Now()
+	err = tx.Commit(ctx)
+	metrics.ObserveNetworkRequest("postgres", "commit", "users", start, err)
+	if err != nil {
 		return domain.User{}, err
 	}
 	return user, nil
@@ -60,10 +68,12 @@ func (p *Postgres) GetByTGID(tgUserID int64) (domain.User, error) {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	err := p.pool.QueryRow(ctx, `
 SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at
 FROM users WHERE tg_user_id=$1
 `, tgUserID).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt)
+	metrics.ObserveNetworkRequest("postgres", "users_get_by_tgid", "users", start, err)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, fmt.Errorf("user not found")
 	}
@@ -75,10 +85,12 @@ func (p *Postgres) ListForDailyTime(now time.Time) ([]domain.User, error) {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	rows, err := p.pool.Query(ctx, `
 SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at
 FROM users WHERE daily_time = $1
 `, now.Format("15:04:05"))
+	metrics.ObserveNetworkRequest("postgres", "users_list_for_daily_time", "users", start, err)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +111,9 @@ func (p *Postgres) UpdateDailyTime(userID int64, daily time.Time) error {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	_, err := p.pool.Exec(ctx, `UPDATE users SET daily_time=$2, updated_at=now() WHERE id=$1`, userID, daily.Format("15:04:05"))
+	metrics.ObserveNetworkRequest("postgres", "users_update_daily_time", "users", start, err)
 	return err
 }
 
@@ -108,7 +122,9 @@ func (p *Postgres) DeleteUserData(userID int64) error {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	_, err := p.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, userID)
+	metrics.ObserveNetworkRequest("postgres", "users_delete", "users", start, err)
 	return err
 }
 
@@ -118,12 +134,14 @@ func (p *Postgres) UpsertChannel(meta domain.ChannelMeta) (domain.Channel, error
 	defer cancel()
 
 	var ch domain.Channel
+	start := time.Now()
 	err := p.pool.QueryRow(ctx, `
 INSERT INTO channels (tg_channel_id, alias, title, is_allowed)
 VALUES ($1,$2,$3,true)
 ON CONFLICT(alias) DO UPDATE SET tg_channel_id=EXCLUDED.tg_channel_id, title=EXCLUDED.title, is_allowed=true
 RETURNING id, tg_channel_id, alias, title, is_allowed, created_at
 `, meta.ID, meta.Alias, meta.Title).Scan(&ch.ID, &ch.TGChannelID, &ch.Alias, &ch.Title, &ch.IsAllowed, &ch.CreatedAt)
+	metrics.ObserveNetworkRequest("postgres", "channels_upsert", "channels", start, err)
 	return ch, err
 }
 
@@ -132,6 +150,7 @@ func (p *Postgres) ListUserChannels(userID int64, limit, offset int) ([]domain.U
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	rows, err := p.pool.Query(ctx, `
 SELECT uc.id, uc.user_id, uc.channel_id, uc.muted, uc.added_at,
        c.id, c.tg_channel_id, c.alias, c.title, c.is_allowed, c.created_at
@@ -140,6 +159,7 @@ WHERE uc.user_id=$1
 ORDER BY uc.added_at DESC
 LIMIT $2 OFFSET $3
 `, userID, limit, offset)
+	metrics.ObserveNetworkRequest("postgres", "user_channels_list", "user_channels", start, err)
 	if err != nil {
 		return nil, err
 	}
@@ -161,11 +181,13 @@ func (p *Postgres) AttachChannelToUser(userID, channelID int64) error {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	_, err := p.pool.Exec(ctx, `
 INSERT INTO user_channels (user_id, channel_id)
 VALUES ($1,$2)
 ON CONFLICT (user_id, channel_id) DO NOTHING
 `, userID, channelID)
+	metrics.ObserveNetworkRequest("postgres", "user_channels_attach", "user_channels", start, err)
 	return err
 }
 
@@ -174,7 +196,9 @@ func (p *Postgres) DetachChannelFromUser(userID, channelID int64) error {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	_, err := p.pool.Exec(ctx, `DELETE FROM user_channels WHERE user_id=$1 AND channel_id=$2`, userID, channelID)
+	metrics.ObserveNetworkRequest("postgres", "user_channels_detach", "user_channels", start, err)
 	return err
 }
 
@@ -183,7 +207,9 @@ func (p *Postgres) SetMuted(userID, channelID int64, muted bool) error {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	_, err := p.pool.Exec(ctx, `UPDATE user_channels SET muted=$3 WHERE user_id=$1 AND channel_id=$2`, userID, channelID, muted)
+	metrics.ObserveNetworkRequest("postgres", "user_channels_set_muted", "user_channels", start, err)
 	return err
 }
 
@@ -193,7 +219,9 @@ func (p *Postgres) CountUserChannels(userID int64) (int, error) {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM user_channels WHERE user_id=$1`, userID).Scan(&count)
+	metrics.ObserveNetworkRequest("postgres", "user_channels_count", "user_channels", start, err)
 	return count, err
 }
 
@@ -213,10 +241,15 @@ VALUES ($1,$2,$3,$4,$5,$6,$7)
 ON CONFLICT (channel_id, tg_msg_id) DO UPDATE SET text_trunc=EXCLUDED.text_trunc, raw_meta_json=EXCLUDED.raw_meta_json, hash=EXCLUDED.hash
 `, channelID, post.TGMsgID, post.PublishedAt, post.URL, post.Text, post.RawMetaJSON, post.Hash)
 	}
+	start := time.Now()
 	br := p.pool.SendBatch(ctx, batch)
+	metrics.ObserveNetworkRequest("postgres", "posts_send_batch", "posts", start, nil)
 	defer br.Close()
 	for range posts {
-		if _, err := br.Exec(); err != nil {
+		start = time.Now()
+		_, err := br.Exec()
+		metrics.ObserveNetworkRequest("postgres", "posts_batch_exec", "posts", start, err)
+		if err != nil {
 			return err
 		}
 	}
@@ -231,11 +264,13 @@ func (p *Postgres) ListRecentPosts(channelIDs []int64, since time.Time) ([]domai
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	rows, err := p.pool.Query(ctx, `
 SELECT id, channel_id, tg_msg_id, published_at, url, text_trunc, raw_meta_json, hash, created_at
 FROM posts WHERE channel_id = ANY($1) AND published_at >= $2
 ORDER BY published_at DESC
 `, channelIDs, since)
+	metrics.ObserveNetworkRequest("postgres", "posts_list_recent", "posts", start, err)
 	if err != nil {
 		return nil, err
 	}
@@ -261,11 +296,13 @@ func (p *Postgres) SaveSummary(postID int64, summary domain.Summary) (int64, err
 	if err != nil {
 		return 0, err
 	}
+	start := time.Now()
 	err = p.pool.QueryRow(ctx, `
         INSERT INTO post_summaries (post_id, headline, bullets_json, score)
         VALUES ($1,$2,$3,$4)
         RETURNING id
     `, postID, summary.Headline, bullets, summary.Score).Scan(&id)
+	metrics.ObserveNetworkRequest("postgres", "post_summaries_insert", "post_summaries", start, err)
 	return id, err
 }
 
@@ -274,32 +311,41 @@ func (p *Postgres) CreateDigest(d domain.Digest) (domain.Digest, error) {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{})
+	metrics.ObserveNetworkRequest("postgres", "begin_tx", "user_digests", start, err)
 	if err != nil {
 		return domain.Digest{}, err
 	}
 	defer tx.Rollback(ctx)
 	var digestID int64
+	start = time.Now()
 	err = tx.QueryRow(ctx, `
 INSERT INTO user_digests (user_id, date, items_count)
 VALUES ($1,$2,$3)
 ON CONFLICT (user_id, date) DO UPDATE SET items_count = EXCLUDED.items_count
 RETURNING id
 `, d.UserID, d.Date, len(d.Items)).Scan(&digestID)
+	metrics.ObserveNetworkRequest("postgres", "user_digests_upsert", "user_digests", start, err)
 	if err != nil {
 		return domain.Digest{}, err
 	}
 	for _, item := range d.Items {
+		start = time.Now()
 		_, err = tx.Exec(ctx, `
 INSERT INTO user_digest_items (digest_id, post_id, rank)
 VALUES ($1,$2,$3)
 ON CONFLICT DO NOTHING
 `, digestID, item.Post.ID, item.Rank)
+		metrics.ObserveNetworkRequest("postgres", "user_digest_items_insert", "user_digest_items", start, err)
 		if err != nil {
 			return domain.Digest{}, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	start = time.Now()
+	err = tx.Commit(ctx)
+	metrics.ObserveNetworkRequest("postgres", "commit", "user_digests", start, err)
+	if err != nil {
 		return domain.Digest{}, err
 	}
 	d.ID = digestID
@@ -311,7 +357,9 @@ func (p *Postgres) MarkDelivered(userID int64, date time.Time) error {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	_, err := p.pool.Exec(ctx, `UPDATE user_digests SET delivered_at=now() WHERE user_id=$1 AND date=$2`, userID, date)
+	metrics.ObserveNetworkRequest("postgres", "user_digests_mark_delivered", "user_digests", start, err)
 	return err
 }
 
@@ -321,7 +369,9 @@ func (p *Postgres) WasDelivered(userID int64, date time.Time) (bool, error) {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	err := p.pool.QueryRow(ctx, `SELECT delivered_at IS NOT NULL FROM user_digests WHERE user_id=$1 AND date=$2`, userID, date).Scan(&exists)
+	metrics.ObserveNetworkRequest("postgres", "user_digests_was_delivered", "user_digests", start, err)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -333,11 +383,13 @@ func (p *Postgres) ListDigestHistory(userID int64, fromDate time.Time) ([]domain
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
+	start := time.Now()
 	rows, err := p.pool.Query(ctx, `
         SELECT id, date, delivered_at
         FROM user_digests WHERE user_id=$1 AND date >= $2
         ORDER BY date DESC
     `, userID, fromDate)
+	metrics.ObserveNetworkRequest("postgres", "user_digests_list_history", "user_digests", start, err)
 	if err != nil {
 		return nil, err
 	}
