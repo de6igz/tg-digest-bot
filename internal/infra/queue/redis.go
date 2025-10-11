@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -36,16 +37,31 @@ func (q *RedisDigestQueue) Enqueue(ctx context.Context, job domain.DigestJob) er
 
 // Pop блокирующе читает задачу из очереди.
 func (q *RedisDigestQueue) Pop(ctx context.Context) (domain.DigestJob, error) {
-	res, err := q.client.BRPop(ctx, 0, q.key).Result()
-	if err != nil {
-		return domain.DigestJob{}, err
+	for {
+		if err := ctx.Err(); err != nil {
+			return domain.DigestJob{}, err
+		}
+
+		res, err := q.client.BRPop(ctx, time.Second, q.key).Result()
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				if ctx.Err() != nil {
+					return domain.DigestJob{}, ctx.Err()
+				}
+				continue
+			}
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			return domain.DigestJob{}, err
+		}
+		if len(res) != 2 {
+			return domain.DigestJob{}, errors.New("redis queue: unexpected response")
+		}
+		var job domain.DigestJob
+		if err := json.Unmarshal([]byte(res[1]), &job); err != nil {
+			return domain.DigestJob{}, fmt.Errorf("decode job: %w", err)
+		}
+		return job, nil
 	}
-	if len(res) != 2 {
-		return domain.DigestJob{}, errors.New("redis queue: unexpected response")
-	}
-	var job domain.DigestJob
-	if err := json.Unmarshal([]byte(res[1]), &job); err != nil {
-		return domain.DigestJob{}, fmt.Errorf("decode job: %w", err)
-	}
-	return job, nil
 }

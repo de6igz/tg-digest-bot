@@ -48,9 +48,11 @@ type Post struct {
 
 // Summary содержит краткое содержание поста.
 type Summary struct {
-	Headline string
-	Bullets  []string
-	Score    float64
+	Headline     string
+	Bullets      []string
+	Score        float64
+	Topic        string
+	TopicSummary string
 }
 
 // RankedPost хранит оценённый пост после ранжирования.

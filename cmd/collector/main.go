@@ -15,6 +15,7 @@ import (
 	"tg-digest-bot/internal/adapters/ranker"
 	"tg-digest-bot/internal/adapters/repo"
 	"tg-digest-bot/internal/adapters/summarizer"
+	"tg-digest-bot/internal/adapters/telegram"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
@@ -116,7 +117,7 @@ func (w *jobWorker) Run(ctx context.Context) {
 }
 
 func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
-	jobLog := w.log.With().Int64("user", job.UserTGID).Str("cause", string(job.Cause)).Logger()
+	jobLog := w.log.With().Int64("user", job.UserTGID).Str("cause", string(job.Cause)).Int64("channel", job.ChannelID).Logger()
 	if job.ChatID == 0 {
 		job.ChatID = job.UserTGID
 	}
@@ -139,31 +140,71 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 		w.sendPlain(job.ChatID, "Сначала добавьте хотя бы один канал командой /add")
 		return
 	}
-	channels := make([]domain.Channel, 0, len(userChannels))
-	for _, uc := range userChannels {
-		channels = append(channels, uc.Channel)
+	var channels []domain.Channel
+	if job.ChannelID > 0 {
+		for _, uc := range userChannels {
+			if uc.ChannelID == job.ChannelID {
+				channels = []domain.Channel{uc.Channel}
+				break
+			}
+		}
+		if len(channels) == 0 {
+			w.sendPlain(job.ChatID, "Канал не найден среди ваших подписок")
+			return
+		}
+	} else {
+		channels = make([]domain.Channel, 0, len(userChannels))
+		for _, uc := range userChannels {
+			channels = append(channels, uc.Channel)
+		}
 	}
 	if err := w.service.CollectNow(ctx, channels); err != nil {
 		jobLog.Error().Err(err).Msg("collector: ошибка сбора постов")
 		w.sendPlain(job.ChatID, "Не удалось собрать дайджест, попробуйте позже.")
 		return
 	}
-	digest, err := w.service.BuildForDate(job.UserTGID, job.Date)
+	var (
+		digest domain.Digest
+		//err    error
+	)
+	if job.ChannelID > 0 {
+		digest, err = w.service.BuildChannelForDate(job.UserTGID, job.ChannelID, job.Date)
+	} else {
+		digest, err = w.service.BuildForDate(job.UserTGID, job.Date)
+	}
 	if err != nil {
+		if errors.Is(err, digestusecase.ErrChannelNotFound) {
+			w.sendPlain(job.ChatID, "Канал недоступен для дайджеста")
+			return
+		}
+		if errors.Is(err, digestusecase.ErrNoChannels) {
+			w.sendPlain(job.ChatID, "Сначала добавьте хотя бы один канал командой /add")
+			return
+		}
 		jobLog.Error().Err(err).Msg("collector: ошибка построения дайджеста")
 		w.sendPlain(job.ChatID, "Не удалось построить дайджест, попробуйте позже.")
 		return
 	}
 	if len(digest.Items) == 0 {
-		w.sendPlain(job.ChatID, "За последние 24 часа ничего не найдено")
+		if job.ChannelID > 0 {
+			w.sendPlain(job.ChatID, "В выбранном канале за последние 24 часа ничего не найдено")
+		} else {
+			w.sendPlain(job.ChatID, "За последние 24 часа ничего не найдено")
+		}
 		return
 	}
-	if err := w.persistDigest(digest); err != nil {
-		jobLog.Error().Err(err).Msg("collector: не удалось сохранить дайджест")
+	if job.ChannelID == 0 {
+		if err := w.persistDigest(digest); err != nil {
+			jobLog.Error().Err(err).Msg("collector: не удалось сохранить дайджест")
+		}
 	}
 	message := digestusecase.FormatDigest(digest)
 	if err := w.sendDigest(job.ChatID, message); err != nil {
+		if job.Cause == domain.DigestCauseManual {
+			w.sendPlain(job.ChatID, "Не удалось собрать дайджест, попробуйте позже.")
+		}
 		jobLog.Error().Err(err).Msg("collector: отправка дайджеста")
+
 	}
 }
 
@@ -176,16 +217,25 @@ func (w *jobWorker) persistDigest(d domain.Digest) error {
 }
 
 func (w *jobWorker) sendPlain(chatID int64, text string) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	if _, err := w.bot.Send(msg); err != nil {
-		w.log.Error().Err(err).Int64("chat", chatID).Msg("collector: не удалось отправить сообщение")
+	parts := telegram.SplitMessage(text)
+	for _, part := range parts {
+		msg := tgbotapi.NewMessage(chatID, part)
+		if _, err := w.bot.Send(msg); err != nil {
+			w.log.Error().Err(err).Int64("chat", chatID).Msg("collector: не удалось отправить сообщение")
+			return
+		}
 	}
 }
 
 func (w *jobWorker) sendDigest(chatID int64, text string) error {
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = tgbotapi.ModeHTML
-	msg.DisableWebPagePreview = true
-	_, err := w.bot.Send(msg)
-	return err
+	parts := telegram.SplitMessage(text)
+	for _, part := range parts {
+		msg := tgbotapi.NewMessage(chatID, part)
+		msg.ParseMode = tgbotapi.ModeHTML
+		msg.DisableWebPagePreview = true
+		if _, err := w.bot.Send(msg); err != nil {
+			return err
+		}
+	}
+	return nil
 }
