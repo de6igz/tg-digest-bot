@@ -31,3 +31,10 @@ type DigestQueue interface {
 	Enqueue(ctx context.Context, job DigestJob) error
 	Pop(ctx context.Context) (DigestJob, error)
 }
+
+// ScheduleTaskRepo отвечает за идемпотентное планирование задач дайджеста.
+type ScheduleTaskRepo interface {
+	// Acquire помечает выполнение задачи на указанное время и возвращает true,
+	// если запись была создана. При конфликте возвращает false без ошибки.
+	Acquire(userID int64, scheduledFor time.Time) (bool, error)
+}

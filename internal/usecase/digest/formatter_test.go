@@ -1,6 +1,7 @@
 package digest
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestFormatDigestBuildsTopicSections(t *testing.T) {
 	mustContain(t, formatted, "Главные релизы и анонсы из игровой индустрии.")
 	mustContain(t, formatted, "<a href=\"https://t.me/example/1\">Battlefield 6 установила рекорд</a>")
 	mustContain(t, formatted, "• <a href=\"https://t.me/example/2\">Дани Ольмо получил травму</a> — Испания потеряла полузащитника перед матчами")
-	mustContain(t, formatted, "🔗 <b>Читать подробнее</b>")
+	mustContain(t, formatted, fmt.Sprintf("<a href=\"%s\">Дайджест создан с помощью %s</a>", footerLinkURL, footerLinkName))
 }
 
 func mustContain(t *testing.T, s, substr string) {

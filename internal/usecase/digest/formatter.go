@@ -8,6 +8,11 @@ import (
 	"tg-digest-bot/internal/domain"
 )
 
+const (
+	footerLinkURL  = "https://logosdigest.example"
+	footerLinkName = "LogosDigest"
+)
+
 // FormatDigest формирует текстовое представление дайджеста для отправки пользователю.
 func FormatDigest(d domain.Digest) string {
 	var sections []string
@@ -36,9 +41,7 @@ func FormatDigest(d domain.Digest) string {
 		sections = append(sections, topics)
 	}
 
-	if links := buildLinksSection(d.Items); links != "" {
-		sections = append(sections, links)
-	}
+	sections = append(sections, buildFooterSection())
 
 	return strings.TrimSpace(strings.Join(sections, "\n\n"))
 }
@@ -118,25 +121,8 @@ func buildTopicSections(items []domain.DigestItem) string {
 	return strings.TrimSpace(builder.String())
 }
 
-func buildLinksSection(items []domain.DigestItem) string {
-	if len(items) == 0 {
-		return ""
-	}
-	var builder strings.Builder
-	builder.WriteString("🔗 <b>Читать подробнее</b>\n")
-	for idx, item := range items {
-		label := strings.TrimSpace(item.Summary.Headline)
-		if label == "" {
-			label = fmt.Sprintf("Пост %d", idx+1)
-		}
-		url := strings.TrimSpace(item.Post.URL)
-		if url == "" {
-			builder.WriteString("- " + escapeHTML(label) + "\n")
-			continue
-		}
-		builder.WriteString(fmt.Sprintf("- <a href=\"%s\">%s</a>\n", html.EscapeString(url), escapeHTML(label)))
-	}
-	return strings.TrimSpace(builder.String())
+func buildFooterSection() string {
+	return fmt.Sprintf("<a href=\"%s\">Дайджест создан с помощью %s</a>", html.EscapeString(footerLinkURL), escapeHTML(footerLinkName))
 }
 
 func filterNonEmptyStrings(values []string) []string {
