@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"tg-digest-bot/internal/infra/metrics"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"
@@ -69,11 +71,19 @@ const (
 // ChatCompletionResponse описывает ответ модели.
 type ChatCompletionResponse struct {
 	Choices []ChatCompletionChoice `json:"choices"`
+	Usage   *ChatCompletionUsage   `json:"usage,omitempty"`
 }
 
 // ChatCompletionChoice содержит сообщение модели.
 type ChatCompletionChoice struct {
 	Message ChatMessage `json:"message"`
+}
+
+// ChatCompletionUsage описывает статистику использования токенов.
+type ChatCompletionUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // CreateChatCompletion вызывает /chat/completions.
@@ -93,26 +103,37 @@ func (c *Client) CreateChatCompletion(ctx context.Context, req ChatCompletionReq
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 
+	start := time.Now()
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
+		metrics.ObserveNetworkRequest("openai", "chat_completions", req.Model, start, err)
 		return ChatCompletionResponse{}, fmt.Errorf("openai: do request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		metrics.ObserveNetworkRequest("openai", "chat_completions", req.Model, start, err)
 		return ChatCompletionResponse{}, fmt.Errorf("openai: read response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
 		var apiErr apiErrorResponse
 		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Error.Message != "" {
-			return ChatCompletionResponse{}, fmt.Errorf("openai: %s", apiErr.Error.Message)
+			err = fmt.Errorf("openai: %s", apiErr.Error.Message)
+		} else {
+			err = fmt.Errorf("openai: unexpected status %d", resp.StatusCode)
 		}
-		return ChatCompletionResponse{}, fmt.Errorf("openai: unexpected status %d", resp.StatusCode)
+		metrics.ObserveNetworkRequest("openai", "chat_completions", req.Model, start, err)
+		return ChatCompletionResponse{}, err
 	}
 	var completion ChatCompletionResponse
 	if err := json.Unmarshal(respBody, &completion); err != nil {
+		metrics.ObserveNetworkRequest("openai", "chat_completions", req.Model, start, err)
 		return ChatCompletionResponse{}, fmt.Errorf("openai: decode response: %w", err)
+	}
+	metrics.ObserveNetworkRequest("openai", "chat_completions", req.Model, start, nil)
+	if completion.Usage != nil {
+		metrics.ObserveLLMGeneration(req.Model, time.Since(start), completion.Usage.PromptTokens, completion.Usage.CompletionTokens, completion.Usage.TotalTokens)
 	}
 	return completion, nil
 }

@@ -14,6 +14,7 @@ import (
 
 	"tg-digest-bot/internal/adapters/telegram"
 	"tg-digest-bot/internal/domain"
+	"tg-digest-bot/internal/infra/metrics"
 	"tg-digest-bot/internal/usecase/channels"
 	"tg-digest-bot/internal/usecase/schedule"
 )
@@ -237,7 +238,12 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 	case data == "more_items":
 		h.reply(cb.Message.Chat.ID, fmt.Sprintf("Пока доступно только %d элементов. Обновите дайджест позже.", h.maxDigest), nil)
 	}
-	_, _ = h.bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+	start := time.Now()
+	_, err := h.bot.Request(tgbotapi.NewCallback(cb.ID, ""))
+	metrics.ObserveNetworkRequest("telegram_bot", "answer_callback", strconv.FormatInt(cb.From.ID, 10), start, err)
+	if err != nil {
+		h.log.Error().Err(err).Msg("не удалось ответить на callback")
+	}
 }
 
 func (h *Handler) handleSchedule(chatID int64) {
@@ -353,6 +359,12 @@ func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID
 		return
 	}
 
+	metrics.IncDigestOverall()
+	metrics.IncDigestForUser(tgUserID)
+	if channelID > 0 {
+		metrics.IncDigestForChannel(channelID)
+	}
+
 	if channelID > 0 {
 		h.reply(chatID, fmt.Sprintf("Собираем дайджест по каналу %s, отправим его в ближайшее время", channelName), nil)
 		return
@@ -411,7 +423,10 @@ func (h *Handler) reply(chatID int64, text string, keyboard *tgbotapi.InlineKeyb
 		if i == 0 && keyboard != nil {
 			msg.ReplyMarkup = keyboard
 		}
-		if _, err := h.bot.Send(msg); err != nil {
+		start := time.Now()
+		_, err := h.bot.Send(msg)
+		metrics.ObserveNetworkRequest("telegram_bot", "send_message", strconv.FormatInt(chatID, 10), start, err)
+		if err != nil {
 			h.log.Error().Err(err).Msg("не удалось отправить сообщение")
 			return
 		}

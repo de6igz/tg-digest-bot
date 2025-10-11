@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"tg-digest-bot/internal/domain"
+	"tg-digest-bot/internal/infra/metrics"
 )
 
 // RedisDigestQueue реализует очередь задач на базе Redis lists.
@@ -29,7 +30,10 @@ func (q *RedisDigestQueue) Enqueue(ctx context.Context, job domain.DigestJob) er
 	if err != nil {
 		return fmt.Errorf("marshal job: %w", err)
 	}
-	if err := q.client.LPush(ctx, q.key, payload).Err(); err != nil {
+	start := time.Now()
+	err = q.client.LPush(ctx, q.key, payload).Err()
+	metrics.ObserveNetworkRequest("redis", "lpush", q.key, start, err)
+	if err != nil {
 		return fmt.Errorf("push job: %w", err)
 	}
 	return nil
@@ -42,7 +46,13 @@ func (q *RedisDigestQueue) Pop(ctx context.Context) (domain.DigestJob, error) {
 			return domain.DigestJob{}, err
 		}
 
+		start := time.Now()
 		res, err := q.client.BRPop(ctx, time.Second, q.key).Result()
+		if errors.Is(err, redis.Nil) {
+			metrics.ObserveNetworkRequest("redis", "brpop", q.key, start, nil)
+			continue
+		}
+		metrics.ObserveNetworkRequest("redis", "brpop", q.key, start, err)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				if ctx.Err() != nil {

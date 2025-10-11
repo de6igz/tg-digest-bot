@@ -21,6 +21,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"tg-digest-bot/internal/domain"
+	"tg-digest-bot/internal/infra/metrics"
 )
 
 // Collector реализует загрузку сообщений через gotd.
@@ -55,7 +56,9 @@ func (c *Collector) Collect24h(channel domain.Channel) ([]domain.Post, error) {
 	posts := make([]domain.Post, 0, 64)
 
 	runErr := c.withClient(func(ctx context.Context, api *tg.Client) error {
+		start := time.Now()
 		resolved, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: normalized})
+		metrics.ObserveNetworkRequest("mtproto", "contacts_resolve_username", normalized, start, err)
 		if err != nil {
 			return fmt.Errorf("resolve channel %s: %w", normalized, err)
 		}
@@ -92,7 +95,9 @@ func (c *Collector) Collect24h(channel domain.Channel) ([]domain.Post, error) {
 				req.MaxID = maxID
 			}
 
+			start = time.Now()
 			history, err := api.MessagesGetHistory(ctx, req)
+			metrics.ObserveNetworkRequest("mtproto", "messages_get_history", normalized, start, err)
 			if err != nil {
 				return fmt.Errorf("messages.getHistory: %w", err)
 			}
@@ -239,7 +244,9 @@ func (r *Resolver) ResolvePublic(alias string) (domain.ChannelMeta, error) {
 	}
 	var meta domain.ChannelMeta
 	err = r.withClient(func(ctx context.Context, api *tg.Client) error {
+		start := time.Now()
 		resolved, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: username})
+		metrics.ObserveNetworkRequest("mtproto", "contacts_resolve_username", username, start, err)
 		if err != nil {
 			return fmt.Errorf("не удалось получить канал %s: %w", username, err)
 		}

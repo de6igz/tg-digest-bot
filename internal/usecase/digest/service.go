@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tg-digest-bot/internal/domain"
+	"tg-digest-bot/internal/infra/metrics"
 )
 
 // ErrNoChannels возвращается если у пользователя нет каналов.
@@ -108,6 +109,7 @@ func (s *Service) BuildChannelForDate(userID, channelID int64, date time.Time) (
 // CollectNow запускает сбор постов у списка каналов.
 func (s *Service) CollectNow(ctx context.Context, channels []domain.Channel) error {
 	for _, ch := range channels {
+		metrics.IncDigestForChannel(ch.ID)
 		posts, err := s.collector.Collect24h(ch)
 		if err != nil {
 			return fmt.Errorf("сбор истории %s: %w", ch.Alias, err)

@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 
@@ -20,6 +22,7 @@ import (
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
 	applog "tg-digest-bot/internal/infra/log"
+	"tg-digest-bot/internal/infra/metrics"
 	"tg-digest-bot/internal/infra/openai"
 	"tg-digest-bot/internal/infra/queue"
 	digestusecase "tg-digest-bot/internal/usecase/digest"
@@ -29,8 +32,12 @@ func main() {
 	cfg := config.Load()
 	logger := applog.NewLogger(cfg.AppEnv)
 
+	metrics.MustRegister(prometheus.DefaultRegisterer)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	metrics.StartServer(ctx, logger.With().Str("component", "metrics").Logger(), ":9090")
 
 	pool, err := db.Connect(cfg.PGDSN)
 	if err != nil {
@@ -220,7 +227,10 @@ func (w *jobWorker) sendPlain(chatID int64, text string) {
 	parts := telegram.SplitMessage(text)
 	for _, part := range parts {
 		msg := tgbotapi.NewMessage(chatID, part)
-		if _, err := w.bot.Send(msg); err != nil {
+		start := time.Now()
+		_, err := w.bot.Send(msg)
+		metrics.ObserveNetworkRequest("telegram_bot", "send_message", strconv.FormatInt(chatID, 10), start, err)
+		if err != nil {
 			w.log.Error().Err(err).Int64("chat", chatID).Msg("collector: не удалось отправить сообщение")
 			return
 		}
@@ -233,7 +243,10 @@ func (w *jobWorker) sendDigest(chatID int64, text string) error {
 		msg := tgbotapi.NewMessage(chatID, part)
 		msg.ParseMode = tgbotapi.ModeHTML
 		msg.DisableWebPagePreview = true
-		if _, err := w.bot.Send(msg); err != nil {
+		start := time.Now()
+		_, err := w.bot.Send(msg)
+		metrics.ObserveNetworkRequest("telegram_bot", "send_message", strconv.FormatInt(chatID, 10), start, err)
+		if err != nil {
 			return err
 		}
 	}
