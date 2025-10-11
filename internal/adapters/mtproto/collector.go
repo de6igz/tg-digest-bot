@@ -2,11 +2,15 @@ package mtproto
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,55 +25,210 @@ import (
 
 // Collector реализует загрузку сообщений через gotd.
 type Collector struct {
-	client *telegram.Client
-	log    zerolog.Logger
+	apiID   int
+	apiHash string
+	storage session.Storage
+	log     zerolog.Logger
+	timeout time.Duration
 }
 
 // NewCollector создаёт MTProto клиент на базе токенов.
 func NewCollector(apiID int, apiHash string, storage session.Storage, log zerolog.Logger) (*Collector, error) {
-	client := telegram.NewClient(apiID, apiHash, telegram.Options{SessionStorage: storage})
-	return &Collector{client: client, log: log}, nil
-}
-
-// Client возвращает MTProto клиент.
-func (c *Collector) Client() *telegram.Client {
-	return c.client
+	if storage == nil {
+		return nil, fmt.Errorf("session storage is required")
+	}
+	return &Collector{apiID: apiID, apiHash: apiHash, storage: storage, log: log, timeout: 90 * time.Second}, nil
 }
 
 // Collect24h собирает историю канала.
 func (c *Collector) Collect24h(channel domain.Channel) ([]domain.Post, error) {
-	ctx := context.Background()
-	err := c.client.Run(ctx, func(ctx context.Context) error {
-		// TODO: Реализация сборщика через channels.GetHistory.
-		return nil
-	})
+	alias := channel.Alias
+	if alias == "" {
+		return nil, fmt.Errorf("channel alias is empty")
+	}
+	normalized, err := normalizeAlias(alias)
 	if err != nil {
 		return nil, err
 	}
-	c.log.Warn().Str("channel", channel.Alias).Msg("Collect24h заглушка в MVP")
-	return []domain.Post{{
-		ChannelID:   channel.ID,
-		TGMsgID:     time.Now().Unix(),
-		PublishedAt: time.Now().UTC(),
-		URL:         fmt.Sprintf("https://t.me/%s/%d", channel.Alias, time.Now().Unix()),
-		Text:        "Пример сообщения канала",
-		RawMetaJSON: []byte(`{"type":"stub"}`),
-	}}, nil
+
+	since := time.Now().UTC().Add(-24 * time.Hour)
+	posts := make([]domain.Post, 0, 64)
+
+	runErr := c.withClient(func(ctx context.Context, api *tg.Client) error {
+		resolved, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: normalized})
+		if err != nil {
+			return fmt.Errorf("resolve channel %s: %w", normalized, err)
+		}
+
+		var resolvedChannel *tg.Channel
+		for _, chat := range resolved.Chats {
+			ch, ok := chat.(*tg.Channel)
+			if !ok {
+				continue
+			}
+			if channel.TGChannelID != 0 && ch.ID == channel.TGChannelID {
+				resolvedChannel = ch
+				break
+			}
+			if strings.EqualFold(ch.Username, normalized) {
+				resolvedChannel = ch
+				break
+			}
+		}
+		if resolvedChannel == nil {
+			return fmt.Errorf("канал %s не найден", normalized)
+		}
+
+		peer := &tg.InputPeerChannel{ChannelID: resolvedChannel.ID, AccessHash: resolvedChannel.AccessHash}
+		limit := 100
+		maxID := 0
+
+		for {
+			req := &tg.MessagesGetHistoryRequest{
+				Peer:  peer,
+				Limit: limit,
+			}
+			if maxID > 0 {
+				req.MaxID = maxID
+			}
+
+			history, err := api.MessagesGetHistory(ctx, req)
+			if err != nil {
+				return fmt.Errorf("messages.getHistory: %w", err)
+			}
+
+			channelMessages, ok := history.(*tg.MessagesChannelMessages)
+			if !ok {
+				return fmt.Errorf("unexpected history response %T", history)
+			}
+			if len(channelMessages.Messages) == 0 {
+				break
+			}
+
+			oldestID := 0
+			stop := false
+
+			for _, msg := range channelMessages.Messages {
+				tm, ok := msg.(*tg.Message)
+				if !ok {
+					continue
+				}
+				if oldestID == 0 || tm.ID < oldestID {
+					oldestID = tm.ID
+				}
+
+				published := time.Unix(int64(tm.Date), 0).UTC()
+				if published.Before(since) {
+					stop = true
+					continue
+				}
+
+				text := strings.TrimSpace(tm.Message)
+				if text == "" && tm.Media == nil {
+					continue
+				}
+
+				meta := buildMessageMeta(tm)
+				rawMeta, err := json.Marshal(meta)
+				if err != nil {
+					c.log.Error().Err(err).Msg("collector: не удалось сериализовать метаданные сообщения")
+					rawMeta = nil
+				}
+
+				posts = append(posts, domain.Post{
+					ChannelID:   channel.ID,
+					TGMsgID:     int64(tm.ID),
+					PublishedAt: published,
+					URL:         fmt.Sprintf("https://t.me/%s/%d", normalized, tm.ID),
+					Text:        text,
+					RawMetaJSON: rawMeta,
+					Hash:        hashMessage(channel.ID, tm.ID, text),
+				})
+			}
+
+			if stop || len(channelMessages.Messages) < limit {
+				break
+			}
+			if oldestID <= 1 {
+				break
+			}
+			maxID = oldestID - 1
+		}
+		return nil
+	})
+	if runErr != nil {
+		return nil, runErr
+	}
+
+	sort.Slice(posts, func(i, j int) bool {
+		return posts[i].PublishedAt.After(posts[j].PublishedAt)
+	})
+
+	return posts, nil
+}
+
+type messageMeta struct {
+	Views      int        `json:"views,omitempty"`
+	Forwards   int        `json:"forwards,omitempty"`
+	Replies    int        `json:"replies,omitempty"`
+	Reactions  int        `json:"reactions,omitempty"`
+	PostAuthor string     `json:"post_author,omitempty"`
+	EditDate   *time.Time `json:"edit_date,omitempty"`
+	HasMedia   bool       `json:"has_media,omitempty"`
+	Entities   int        `json:"entities,omitempty"`
+}
+
+func buildMessageMeta(msg *tg.Message) messageMeta {
+	meta := messageMeta{}
+	if msg == nil {
+		return meta
+	}
+	if views, ok := msg.GetViews(); ok {
+		meta.Views = views
+	}
+	if forwards, ok := msg.GetForwards(); ok {
+		meta.Forwards = forwards
+	}
+	if replies, ok := msg.GetReplies(); ok {
+		meta.Replies = replies.Replies
+	}
+	if reactions, ok := msg.GetReactions(); ok {
+		for _, reaction := range reactions.Results {
+			meta.Reactions += reaction.Count
+		}
+	}
+	if editDate, ok := msg.GetEditDate(); ok {
+		t := time.Unix(int64(editDate), 0).UTC()
+		meta.EditDate = &t
+	}
+	if author, ok := msg.GetPostAuthor(); ok && author != "" {
+		meta.PostAuthor = author
+	}
+	if len(msg.Entities) > 0 {
+		meta.Entities = len(msg.Entities)
+	}
+	meta.HasMedia = msg.Media != nil
+	return meta
+}
+
+func hashMessage(channelID int64, messageID int, text string) string {
+	data := fmt.Sprintf("%d:%d:%s", channelID, messageID, text)
+	sum := sha256.Sum256([]byte(data))
+	return hex.EncodeToString(sum[:])
 }
 
 // Resolver проверяет публичность каналов через MTProto.
 type Resolver struct {
-	client  *telegram.Client
+	apiID   int
+	apiHash string
+	storage session.Storage
 	log     zerolog.Logger
 	timeout time.Duration
 }
 
 // NewResolver создаёт резолвер с MTProto клиентом.
-func NewResolver(client *telegram.Client, log zerolog.Logger) *Resolver {
-	if client == nil {
-		return &Resolver{log: log, timeout: 20 * time.Second}
-	}
-	return &Resolver{client: client, log: log, timeout: 20 * time.Second}
+func NewResolver(apiID int, apiHash string, storage session.Storage, log zerolog.Logger) *Resolver {
+	return &Resolver{apiID: apiID, apiHash: apiHash, storage: storage, log: log, timeout: 20 * time.Second}
 }
 
 // ResolvePublic возвращает ChannelMeta.
@@ -78,17 +237,8 @@ func (r *Resolver) ResolvePublic(alias string) (domain.ChannelMeta, error) {
 	if err != nil {
 		return domain.ChannelMeta{}, err
 	}
-
-	if r.client == nil {
-		return domain.ChannelMeta{}, fmt.Errorf("MTProto клиент не инициализирован")
-	}
-
 	var meta domain.ChannelMeta
-	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
-	defer cancel()
-
-	err = r.client.Run(ctx, func(ctx context.Context) error {
-		api := r.client.API()
+	err = r.withClient(func(ctx context.Context, api *tg.Client) error {
 		resolved, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: username})
 		if err != nil {
 			return fmt.Errorf("не удалось получить канал %s: %w", username, err)
@@ -120,6 +270,24 @@ func (r *Resolver) ResolvePublic(alias string) (domain.ChannelMeta, error) {
 	}
 	r.log.Debug().Str("alias", meta.Alias).Str("title", meta.Title).Msg("канал найден")
 	return meta, nil
+}
+
+func (c *Collector) withClient(fn func(ctx context.Context, api *tg.Client) error) error {
+	client := telegram.NewClient(c.apiID, c.apiHash, telegram.Options{SessionStorage: c.storage})
+	return client.Run(context.Background(), func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+		return fn(ctx, client.API())
+	})
+}
+
+func (r *Resolver) withClient(fn func(ctx context.Context, api *tg.Client) error) error {
+	client := telegram.NewClient(r.apiID, r.apiHash, telegram.Options{SessionStorage: r.storage})
+	return client.Run(context.Background(), func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, r.timeout)
+		defer cancel()
+		return fn(ctx, client.API())
+	})
 }
 
 func normalizeAlias(alias string) (string, error) {

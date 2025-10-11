@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,7 +14,6 @@ import (
 
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/usecase/channels"
-	digestusecase "tg-digest-bot/internal/usecase/digest"
 	"tg-digest-bot/internal/usecase/schedule"
 )
 
@@ -24,10 +22,9 @@ type Handler struct {
 	bot         *tgbotapi.BotAPI
 	log         zerolog.Logger
 	channelUC   *channels.Service
-	digestSrv   domain.DigestService
 	scheduleUC  *schedule.Service
 	users       domain.UserRepo
-	digestRepo  domain.DigestRepo
+	jobs        domain.DigestQueue
 	freeLimit   int
 	maxDigest   int
 	mu          sync.Mutex
@@ -35,15 +32,14 @@ type Handler struct {
 }
 
 // NewHandler создаёт обработчик.
-func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, digestSrv domain.DigestService, scheduleUC *schedule.Service, userRepo domain.UserRepo, digestRepo domain.DigestRepo, freeLimit, maxDigest int) *Handler {
+func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, jobs domain.DigestQueue, freeLimit, maxDigest int) *Handler {
 	return &Handler{
 		bot:         bot,
 		log:         log,
 		channelUC:   channelUC,
-		digestSrv:   digestSrv,
 		scheduleUC:  scheduleUC,
 		users:       userRepo,
-		digestRepo:  digestRepo,
+		jobs:        jobs,
 		freeLimit:   freeLimit,
 		maxDigest:   maxDigest,
 		pendingDrop: make(map[int64]time.Time),
@@ -181,31 +177,19 @@ func (h *Handler) handleList(ctx context.Context, chatID int64, tgUserID int64) 
 }
 
 func (h *Handler) handleDigestNow(ctx context.Context, chatID int64, tgUserID int64) {
-	digest, err := h.digestSrv.BuildForDate(tgUserID, time.Now().UTC())
-	if err != nil {
-		if errors.Is(err, digestusecase.ErrNoChannels) {
-			h.reply(chatID, "Сначала добавьте хотя бы один канал командой /add", nil)
-			return
-		}
-		h.reply(chatID, fmt.Sprintf("Не удалось собрать дайджест: %v", err), nil)
+	job := domain.DigestJob{
+		UserTGID:    tgUserID,
+		ChatID:      chatID,
+		Date:        time.Now().UTC(),
+		RequestedAt: time.Now().UTC(),
+		Cause:       domain.DigestCauseManual,
+	}
+	if err := h.jobs.Enqueue(ctx, job); err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("не удалось поставить задачу дайджеста")
+		h.reply(chatID, "Не удалось поставить дайджест в очередь, попробуйте позже", nil)
 		return
 	}
-	if len(digest.Items) == 0 {
-		h.reply(chatID, "За последние 24 часа ничего не найдено", nil)
-		return
-	}
-	if err := h.persistDigest(digest); err != nil {
-		h.log.Error().Err(err).Msg("не удалось сохранить дайджест")
-	}
-	message := h.formatDigest(digest)
-	msg := tgbotapi.NewMessage(chatID, message)
-	msg.ParseMode = tgbotapi.ModeHTML
-	msg.DisableWebPagePreview = true
-	if _, sendErr := h.bot.Send(msg); sendErr != nil {
-		h.log.Error().Err(sendErr).Msg("не удалось отправить дайджест")
-		h.reply(chatID, "Не удалось отправить сообщение, попробуйте позже", nil)
-		return
-	}
+	h.reply(chatID, "Собираем дайджест, отправим его в ближайшее время", nil)
 }
 
 func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery) {
@@ -232,7 +216,7 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 		id := parseID(data)
 		h.handleDeleteChannel(ctx, cb.Message.Chat.ID, cb.From.ID, id)
 	case data == "more_items":
-		h.reply(cb.Message.Chat.ID, "Пока доступно только 10 элементов. Обновите дайджест позже.", nil)
+		h.reply(cb.Message.Chat.ID, fmt.Sprintf("Пока доступно только %d элементов. Обновите дайджест позже.", h.maxDigest), nil)
 	}
 	_, _ = h.bot.Request(tgbotapi.NewCallback(cb.ID, ""))
 }
@@ -345,40 +329,6 @@ func (h *Handler) handleClearConfirm(ctx context.Context, chatID, tgUserID int64
 	h.reply(chatID, "Данные удалены. Для продолжения отправьте /start", nil)
 }
 
-func (h *Handler) persistDigest(d domain.Digest) error {
-	saved, err := h.digestRepo.CreateDigest(d)
-	if err != nil {
-		return err
-	}
-	return h.digestRepo.MarkDelivered(saved.UserID, saved.Date)
-}
-
-func (h *Handler) formatDigest(d domain.Digest) string {
-	var b strings.Builder
-	b.WriteString("📰 Дайджест за 24 часа\n\n")
-	for i, item := range d.Items {
-		title := item.Summary.Headline
-		if strings.TrimSpace(title) == "" {
-			title = fmt.Sprintf("Запись #%d", i+1)
-		}
-		b.WriteString(fmt.Sprintf("%d. <b>%s</b>\n", i+1, escapeHTML(title)))
-		if len(item.Summary.Bullets) > 0 {
-			for _, bullet := range item.Summary.Bullets {
-				trimmed := strings.TrimSpace(bullet)
-				if trimmed == "" {
-					continue
-				}
-				b.WriteString("• " + escapeHTML(trimmed) + "\n")
-			}
-		}
-		if item.Post.URL != "" {
-			b.WriteString(fmt.Sprintf("<a href=\"%s\">Читать</a>\n", html.EscapeString(item.Post.URL)))
-		}
-		b.WriteString("\n")
-	}
-	return strings.TrimSpace(b.String())
-}
-
 func parseID(data string) int64 {
 	parts := strings.Split(data, ":")
 	if len(parts) != 2 {
@@ -429,11 +379,4 @@ func SchedulePresetKeyboard() *tgbotapi.InlineKeyboardMarkup {
 // ParseLocalTime парсит время формата ЧЧ:ММ.
 func ParseLocalTime(input string) (time.Time, error) {
 	return time.Parse("15:04", input)
-}
-
-func escapeHTML(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	return s
 }

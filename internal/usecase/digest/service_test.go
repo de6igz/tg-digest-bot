@@ -49,6 +49,9 @@ func TestBuildForDate(t *testing.T) {
 	if len(digest.Items) != 1 {
 		t.Fatalf("ожидали 1 пункт")
 	}
+	if digest.Overview != "главное" {
+		t.Fatalf("ожидали overview от ранкера")
+	}
 }
 
 type fakeSummarizer struct{}
@@ -59,6 +62,10 @@ func (f *fakeSummarizer) Summarize(post domain.Post) (domain.Summary, error) {
 
 type fakeRanker struct{}
 
-func (f *fakeRanker) Rank(posts []domain.Post) ([]domain.RankedPost, error) {
-	return []domain.RankedPost{{Post: posts[0], Score: 1, Summary: domain.Summary{Headline: "ok"}}}, nil
+func (f *fakeRanker) Rank(posts []domain.Post) (domain.DigestOutline, error) {
+	return domain.DigestOutline{
+		Overview: "главное",
+		Theses:   []string{"тезис"},
+		Items:    []domain.RankedPost{{Post: posts[0], Score: 1, Summary: domain.Summary{Headline: "ok"}}},
+	}, nil
 }

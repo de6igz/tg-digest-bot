@@ -19,10 +19,10 @@ func NewSimple(maxFreshnessHours float64) *SimpleRanker {
 }
 
 // Rank оценивает посты.
-func (r *SimpleRanker) Rank(posts []domain.Post) ([]domain.RankedPost, error) {
+func (r *SimpleRanker) Rank(posts []domain.Post) (domain.DigestOutline, error) {
 	posts = DeduplicateByURL(posts)
 	if len(posts) == 0 {
-		return nil, nil
+		return domain.DigestOutline{}, nil
 	}
 	now := time.Now().UTC()
 	items := make([]domain.RankedPost, 0, len(posts))
@@ -41,7 +41,7 @@ func (r *SimpleRanker) Rank(posts []domain.Post) ([]domain.RankedPost, error) {
 		items = append(items, domain.RankedPost{Post: p, Score: score})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Score > items[j].Score })
-	return items, nil
+	return domain.DigestOutline{Items: items}, nil
 }
 
 func minFloat(a, b float64) float64 {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"log"
+	"time"
 
 	"github.com/kelseyhightower/envconfig"
 )
@@ -31,6 +32,17 @@ type AppConfig struct {
 	Limits struct {
 		FreeChannels int `envconfig:"FREE_CHANNELS_LIMIT" default:"5"`
 		DigestMax    int `envconfig:"DIGEST_MAX_ITEMS" default:"10"`
+	} `envconfig:""`
+
+	Queues struct {
+		Digest string `envconfig:"DIGEST_QUEUE_KEY" default:"digest_jobs"`
+	} `envconfig:""`
+
+	OpenAI struct {
+		APIKey  string        `envconfig:"OPENAI_API_KEY"`
+		BaseURL string        `envconfig:"OPENAI_BASE_URL"`
+		Model   string        `envconfig:"OPENAI_MODEL" default:"qwen3:4b"`
+		Timeout time.Duration `envconfig:"OPENAI_TIMEOUT" default:"120s"`
 	} `envconfig:""`
 }
 

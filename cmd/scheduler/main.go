@@ -1,16 +1,17 @@
 package main
 
 import (
+	"context"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 
-	"tg-digest-bot/internal/adapters/ranker"
 	"tg-digest-bot/internal/adapters/repo"
-	"tg-digest-bot/internal/adapters/summarizer"
+	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
-	"tg-digest-bot/internal/usecase/digest"
+	"tg-digest-bot/internal/infra/queue"
 )
 
 func main() {
@@ -22,9 +23,15 @@ func main() {
 	defer pool.Close()
 
 	repoAdapter := repo.NewPostgres(pool)
-	summarizerAdapter := summarizer.NewSimple()
-	rankerAdapter := ranker.NewSimple(24)
-	digestService := digest.NewService(repoAdapter, repoAdapter, repoAdapter, repoAdapter, summarizerAdapter, rankerAdapter, nil, cfg.Limits.DigestMax)
+	if cfg.RedisAddr == "" {
+		log.Fatal().Msg("scheduler: не указан адрес Redis (REDIS_ADDR)")
+	}
+	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	defer redisClient.Close()
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		log.Fatal().Err(err).Msg("scheduler: не удалось подключиться к Redis")
+	}
+	digestQueue := queue.NewRedisDigestQueue(redisClient, cfg.Queues.Digest)
 
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -35,8 +42,15 @@ func main() {
 			continue
 		}
 		for _, user := range users {
-			if err := digestService.BuildAndSendNow(user.TGUserID); err != nil {
-				log.Error().Err(err).Int64("user", user.TGUserID).Msg("scheduler: не удалось отправить дайджест")
+			job := domain.DigestJob{
+				UserTGID:    user.TGUserID,
+				ChatID:      user.TGUserID,
+				Date:        time.Now().UTC(),
+				RequestedAt: time.Now().UTC(),
+				Cause:       domain.DigestCauseScheduled,
+			}
+			if err := digestQueue.Enqueue(context.Background(), job); err != nil {
+				log.Error().Err(err).Int64("user", user.TGUserID).Msg("scheduler: не удалось поставить задачу дайджеста")
 			}
 		}
 	}

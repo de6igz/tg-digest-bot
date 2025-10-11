@@ -10,18 +10,17 @@ import (
 
 	chi "github.com/go-chi/chi/v5"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/redis/go-redis/v9"
 
 	"tg-digest-bot/internal/adapters/bot"
 	"tg-digest-bot/internal/adapters/mtproto"
-	"tg-digest-bot/internal/adapters/ranker"
 	"tg-digest-bot/internal/adapters/repo"
-	"tg-digest-bot/internal/adapters/summarizer"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
 	"tg-digest-bot/internal/infra/log"
+	"tg-digest-bot/internal/infra/queue"
 	"tg-digest-bot/internal/usecase/channels"
-	"tg-digest-bot/internal/usecase/digest"
 	"tg-digest-bot/internal/usecase/schedule"
 )
 
@@ -36,18 +35,20 @@ func main() {
 	defer pool.Close()
 
 	repoAdapter := repo.NewPostgres(pool)
-	summarizerAdapter := summarizer.NewSimple()
-	rankerAdapter := ranker.NewSimple(24)
+	if cfg.RedisAddr == "" {
+		logger.Fatal().Msg("не указан адрес Redis (REDIS_ADDR)")
+	}
+	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	defer redisClient.Close()
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		logger.Fatal().Err(err).Msg("не удалось подключиться к Redis")
+	}
+	digestQueue := queue.NewRedisDigestQueue(redisClient, cfg.Queues.Digest)
 	if cfg.MTProto.SessionFile == "" {
 		logger.Fatal().Msg("не указан путь к MTProto-сессии (MTPROTO_SESSION_FILE)")
 	}
 	collectorSession := mtproto.NewSessionFile(cfg.MTProto.SessionFile)
-	collector, err := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("не удалось инициализировать MTProto клиент")
-	}
-	digestService := digest.NewService(repoAdapter, repoAdapter, repoAdapter, repoAdapter, summarizerAdapter, rankerAdapter, collector, cfg.Limits.DigestMax)
-	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(collector.Client(), logger), repoAdapter, cfg.Limits.FreeChannels)
+	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger), repoAdapter, cfg.Limits.FreeChannels)
 	scheduleService := schedule.NewService(repoAdapter)
 
 	botAPI, err := tgbotapi.NewBotAPI(cfg.Telegram.Token)
@@ -55,7 +56,7 @@ func main() {
 		logger.Fatal().Err(err).Msg("не удалось создать бота")
 	}
 
-	h := bot.NewHandler(botAPI, logger, channelService, digestService, scheduleService, repoAdapter, repoAdapter, cfg.Limits.FreeChannels, cfg.Limits.DigestMax)
+	h := bot.NewHandler(botAPI, logger, channelService, scheduleService, repoAdapter, digestQueue, cfg.Limits.FreeChannels, cfg.Limits.DigestMax)
 
 	r := chi.NewRouter()
 	r.Post("/bot/webhook", func(w http.ResponseWriter, r *http.Request) {
