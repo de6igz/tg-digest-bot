@@ -80,7 +80,8 @@ FROM users WHERE tg_user_id=$1
 	return user, err
 }
 
-// ListForDailyTime выбирает пользователей, у которых локальное время совпадает.
+// ListForDailyTime возвращает пользователей с настроенным временем доставки.
+// Параметр now сохраняется для совместимости интерфейса и может использоваться в будущем для оптимизации выборки.
 func (p *Postgres) ListForDailyTime(now time.Time) ([]domain.User, error) {
 	ctx, cancel := p.connCtx()
 	defer cancel()
@@ -88,8 +89,8 @@ func (p *Postgres) ListForDailyTime(now time.Time) ([]domain.User, error) {
 	start := time.Now()
 	rows, err := p.pool.Query(ctx, `
 SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at
-FROM users WHERE daily_time = $1
-`, now.Format("15:04:05"))
+FROM users WHERE daily_time IS NOT NULL
+`)
 	metrics.ObserveNetworkRequest("postgres", "users_list_for_daily_time", "users", start, err)
 	if err != nil {
 		return nil, err
@@ -104,6 +105,24 @@ FROM users WHERE daily_time = $1
 		users = append(users, u)
 	}
 	return users, rows.Err()
+}
+
+// AcquireScheduleTask вставляет запись о поставленной задаче и возвращает true, если удалось.
+func (p *Postgres) AcquireScheduleTask(userID int64, scheduledFor time.Time) (bool, error) {
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	start := time.Now()
+	res, err := p.pool.Exec(ctx, `
+INSERT INTO schedule_tasks (user_id, scheduled_for)
+VALUES ($1, $2)
+ON CONFLICT (user_id, scheduled_for) DO NOTHING
+`, userID, scheduledFor)
+	metrics.ObserveNetworkRequest("postgres", "schedule_tasks_acquire", "schedule_tasks", start, err)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() > 0, nil
 }
 
 // UpdateDailyTime обновляет время.
