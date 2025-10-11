@@ -48,11 +48,7 @@ func main() {
 		logger.Fatal().Msg("не указан путь к MTProto-сессии (MTPROTO_SESSION_FILE)")
 	}
 	collectorSession := mtproto.NewSessionFile(cfg.MTProto.SessionFile)
-	collector, err := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("не удалось инициализировать MTProto клиент")
-	}
-	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(collector.Client(), logger), repoAdapter, cfg.Limits.FreeChannels)
+	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger), repoAdapter, cfg.Limits.FreeChannels)
 	scheduleService := schedule.NewService(repoAdapter)
 
 	botAPI, err := tgbotapi.NewBotAPI(cfg.Telegram.Token)

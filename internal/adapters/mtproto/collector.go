@@ -25,19 +25,19 @@ import (
 
 // Collector реализует загрузку сообщений через gotd.
 type Collector struct {
-	client *telegram.Client
-	log    zerolog.Logger
+	apiID   int
+	apiHash string
+	storage session.Storage
+	log     zerolog.Logger
+	timeout time.Duration
 }
 
 // NewCollector создаёт MTProto клиент на базе токенов.
 func NewCollector(apiID int, apiHash string, storage session.Storage, log zerolog.Logger) (*Collector, error) {
-	client := telegram.NewClient(apiID, apiHash, telegram.Options{SessionStorage: storage})
-	return &Collector{client: client, log: log}, nil
-}
-
-// Client возвращает MTProto клиент.
-func (c *Collector) Client() *telegram.Client {
-	return c.client
+	if storage == nil {
+		return nil, fmt.Errorf("session storage is required")
+	}
+	return &Collector{apiID: apiID, apiHash: apiHash, storage: storage, log: log, timeout: 90 * time.Second}, nil
 }
 
 // Collect24h собирает историю канала.
@@ -54,11 +54,7 @@ func (c *Collector) Collect24h(channel domain.Channel) ([]domain.Post, error) {
 	since := time.Now().UTC().Add(-24 * time.Hour)
 	posts := make([]domain.Post, 0, 64)
 
-	runErr := c.client.Run(context.Background(), func(ctx context.Context) error {
-		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		defer cancel()
-
-		api := c.client.API()
+	runErr := c.withClient(func(ctx context.Context, api *tg.Client) error {
 		resolved, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: normalized})
 		if err != nil {
 			return fmt.Errorf("resolve channel %s: %w", normalized, err)
@@ -223,17 +219,16 @@ func hashMessage(channelID int64, messageID int, text string) string {
 
 // Resolver проверяет публичность каналов через MTProto.
 type Resolver struct {
-	client  *telegram.Client
+	apiID   int
+	apiHash string
+	storage session.Storage
 	log     zerolog.Logger
 	timeout time.Duration
 }
 
 // NewResolver создаёт резолвер с MTProto клиентом.
-func NewResolver(client *telegram.Client, log zerolog.Logger) *Resolver {
-	if client == nil {
-		return &Resolver{log: log, timeout: 20 * time.Second}
-	}
-	return &Resolver{client: client, log: log, timeout: 20 * time.Second}
+func NewResolver(apiID int, apiHash string, storage session.Storage, log zerolog.Logger) *Resolver {
+	return &Resolver{apiID: apiID, apiHash: apiHash, storage: storage, log: log, timeout: 20 * time.Second}
 }
 
 // ResolvePublic возвращает ChannelMeta.
@@ -242,17 +237,8 @@ func (r *Resolver) ResolvePublic(alias string) (domain.ChannelMeta, error) {
 	if err != nil {
 		return domain.ChannelMeta{}, err
 	}
-
-	if r.client == nil {
-		return domain.ChannelMeta{}, fmt.Errorf("MTProto клиент не инициализирован")
-	}
-
 	var meta domain.ChannelMeta
-	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
-	defer cancel()
-
-	err = r.client.Run(ctx, func(ctx context.Context) error {
-		api := r.client.API()
+	err = r.withClient(func(ctx context.Context, api *tg.Client) error {
 		resolved, err := api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: username})
 		if err != nil {
 			return fmt.Errorf("не удалось получить канал %s: %w", username, err)
@@ -284,6 +270,24 @@ func (r *Resolver) ResolvePublic(alias string) (domain.ChannelMeta, error) {
 	}
 	r.log.Debug().Str("alias", meta.Alias).Str("title", meta.Title).Msg("канал найден")
 	return meta, nil
+}
+
+func (c *Collector) withClient(fn func(ctx context.Context, api *tg.Client) error) error {
+	client := telegram.NewClient(c.apiID, c.apiHash, telegram.Options{SessionStorage: c.storage})
+	return client.Run(context.Background(), func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+		return fn(ctx, client.API())
+	})
+}
+
+func (r *Resolver) withClient(fn func(ctx context.Context, api *tg.Client) error) error {
+	client := telegram.NewClient(r.apiID, r.apiHash, telegram.Options{SessionStorage: r.storage})
+	return client.Run(context.Background(), func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, r.timeout)
+		defer cancel()
+		return fn(ctx, client.API())
+	})
 }
 
 func normalizeAlias(alias string) (string, error) {
