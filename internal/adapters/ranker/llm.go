@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/rs/zerolog/log"
 	"strings"
 	"time"
 
@@ -29,7 +30,7 @@ func NewLLM(client chatCompletionClient, model string, timeout time.Duration, ma
 		maxItems = 10
 	}
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 300 * time.Second
 	}
 	return &LLMRanker{client: client, model: model, timeout: timeout, maxItems: maxItems}
 }
@@ -134,6 +135,7 @@ func (r *LLMRanker) Rank(posts []domain.Post) (domain.DigestOutline, error) {
 		Overview: strings.TrimSpace(parsed.Overview),
 		Theses:   filterNonEmpty(parsed.Theses),
 	}
+	log.Info().Msgf("%v", resp.Usage.String())
 	for _, ref := range parsed.Posts {
 		if len(outline.Items) >= r.maxItems {
 			break

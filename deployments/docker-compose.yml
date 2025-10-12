@@ -1,61 +1,61 @@
 version: '3.9'
 services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: tgdigest
-    ports:
-      - "5432:5432"
-    volumes:
-      - db_data:/var/lib/postgresql/data
+#  db:
+#    image: postgres:16
+#    environment:
+#      POSTGRES_USER: postgres
+#      POSTGRES_PASSWORD: postgres
+#      POSTGRES_DB: tgdigest
+#    ports:
+#      - "5432:5432"
+#    volumes:
+#      - db_data:/var/lib/postgresql/data
   rabbitmq:
     image: rabbitmq:3-management
     ports:
       - "5672:5672"
       - "15672:15672"
-  migrator:
-    image: migrate/migrate:v4.17.0
-    volumes:
-      - ../migrations:/migrations
-    command: ["-path", "/migrations", "-database", "${PG_DSN}", "up"]
-    depends_on:
-      - db
-    environment:
-      PG_DSN: ${PG_DSN}
-  bot:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile.bot
-    env_file: ../.env.example
-    depends_on:
-      - db
-      - rabbitmq
-  collector:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile.collector
-    env_file: ../.env.example
-    depends_on:
-      - db
-      - rabbitmq
-  scheduler:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile.scheduler
-    env_file: ../.env.example
-    depends_on:
-      - db
-      - rabbitmq
-  api:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile.api
-    env_file: ../.env.example
-    ports:
-      - "8080:8080"
-    depends_on:
-      - db
+#  migrator:
+#    image: migrate/migrate:v4.17.0
+#    volumes:
+#      - ../migrations:/migrations
+#    command: ["-path", "/migrations", "-database", "${PG_DSN}", "up"]
+#    depends_on:
+#      - db
+#    environment:
+#      PG_DSN: ${PG_DSN}
+#  bot:
+#    build:
+#      context: ..
+#      dockerfile: deployments/Dockerfile.bot
+#    env_file: ../.env.example
+#    depends_on:
+#      - db
+#      - rabbitmq
+#  collector:
+#    build:
+#      context: ..
+#      dockerfile: deployments/Dockerfile.collector
+#    env_file: ../.env.example
+#    depends_on:
+#      - db
+#      - rabbitmq
+#  scheduler:
+#    build:
+#      context: ..
+#      dockerfile: deployments/Dockerfile.scheduler
+#    env_file: ../.env.example
+#    depends_on:
+#      - db
+#      - rabbitmq
+#  api:
+#    build:
+#      context: ..
+#      dockerfile: deployments/Dockerfile.api
+#    env_file: ../.env.example
+#    ports:
+#      - "8080:8080"
+#    depends_on:
+#      - db
 volumes:
   db_data:

@@ -3,16 +3,16 @@ module tg-digest-bot
 go 1.24.7
 
 require (
-github.com/go-chi/chi/v5 v5.2.3
-github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
-github.com/gotd/td v0.131.0
-github.com/jackc/pgx/v5 v5.7.6
-github.com/kelseyhightower/envconfig v1.4.0
-github.com/google/uuid v1.6.0
-github.com/prometheus/client_golang v1.23.2
-github.com/rabbitmq/amqp091-go v1.10.0
-github.com/redis/go-redis/v9 v9.14.0
-github.com/rs/zerolog v1.34.0
+	github.com/go-chi/chi/v5 v5.2.3
+	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/google/uuid v1.6.0
+	github.com/gotd/td v0.131.0
+	github.com/jackc/pgx/v5 v5.7.6
+	github.com/kelseyhightower/envconfig v1.4.0
+	github.com/prometheus/client_golang v1.23.2
+	github.com/rabbitmq/amqp091-go v1.10.0
+	github.com/redis/go-redis/v9 v9.14.0
+	github.com/rs/zerolog v1.34.0
 )
 
 require (
@@ -28,7 +28,6 @@ require (
 	github.com/go-faster/jx v1.1.0 // indirect
 	github.com/go-faster/xor v1.0.0 // indirect
 	github.com/go-faster/yaml v0.4.6 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gotd/ige v0.2.2 // indirect
 	github.com/gotd/neo v0.1.5 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

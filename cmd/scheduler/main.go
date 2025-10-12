@@ -50,6 +50,7 @@ func main() {
 			return
 		case <-ticker.C:
 			now := time.Now().UTC()
+			log.Info().Time("now", now).Msg("scheduler: тик")
 			users, err := repoAdapter.ListForDailyTime(now)
 			if err != nil {
 				log.Error().Err(err).Msg("scheduler: ошибка выборки пользователей")
