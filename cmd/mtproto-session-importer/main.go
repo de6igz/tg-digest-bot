@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"tg-digest-bot/internal/adapters/mtproto"
 	"tg-digest-bot/internal/adapters/repo"
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
@@ -33,9 +33,11 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("mtproto-importer: failed to read session file")
 	}
-	if !json.Valid(sessionData) {
-		log.Fatal().Msg("mtproto-importer: session file must contain valid JSON")
+	normalized, converted, err := mtproto.NormalizeSessionBytes(sessionData)
+	if err != nil {
+		log.Fatal().Err(err).Msg("mtproto-importer: unsupported MTProto session format")
 	}
+	sessionData = normalized
 
 	cfg := config.Load()
 	if cfg.PGDSN == "" {
@@ -63,5 +65,8 @@ func main() {
 		}
 	}
 
+	if converted {
+		fmt.Println("Session was converted to gotd JSON format before storing")
+	}
 	fmt.Printf("Stored MTProto session %q (%d bytes) in database\n", sessionName, len(sessionData))
 }

@@ -447,8 +447,19 @@ func (s *SessionDB) LoadSession(ctx context.Context) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, session.ErrNotFound
 	}
-	clone := make([]byte, len(data))
-	copy(clone, data)
+
+	normalized, converted, err := NormalizeSessionBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("подготовка MTProto-сессии: %w", err)
+	}
+	if converted {
+		if err := s.repo.StoreMTProtoSession(ctx, s.name, normalized); err != nil {
+			return nil, fmt.Errorf("обновление MTProto-сессии: %w", err)
+		}
+	}
+
+	clone := make([]byte, len(normalized))
+	copy(clone, normalized)
 	return clone, nil
 }
 
