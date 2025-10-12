@@ -44,7 +44,7 @@ func main() {
 	if cfg.RabbitURL == "" {
 		logger.Fatal().Msg("не указан адрес RabbitMQ (RABBITMQ_URL)")
 	}
-	digestQueue, err := queue.NewRabbitDigestQueue(cfg.RabbitURL, cfg.RabbitManagementURL, cfg.Queues.Digest)
+	digestQueue, err := queue.NewRabbitDigestQueue(cfg.RabbitURL, cfg.Queues.Digest)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("не удалось инициализировать очередь RabbitMQ")
 	}
