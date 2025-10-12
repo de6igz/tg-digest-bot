@@ -11,7 +11,6 @@ import (
 	chi "github.com/go-chi/chi/v5"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 
 	"tg-digest-bot/internal/adapters/bot"
 	"tg-digest-bot/internal/adapters/mtproto"
@@ -42,15 +41,13 @@ func main() {
 	defer pool.Close()
 
 	repoAdapter := repo.NewPostgres(pool)
-	if cfg.RedisAddr == "" {
-		logger.Fatal().Msg("не указан адрес Redis (REDIS_ADDR)")
+	if cfg.RabbitURL == "" {
+		logger.Fatal().Msg("не указан адрес RabbitMQ (RABBITMQ_URL)")
 	}
-	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer redisClient.Close()
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		logger.Fatal().Err(err).Msg("не удалось подключиться к Redis")
+	digestQueue, err := queue.NewRabbitDigestQueue(cfg.RabbitURL, cfg.RabbitManagementURL, cfg.Queues.Digest)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("не удалось инициализировать очередь RabbitMQ")
 	}
-	digestQueue := queue.NewRedisDigestQueue(redisClient, cfg.Queues.Digest)
 	if cfg.MTProto.SessionFile == "" {
 		logger.Fatal().Msg("не указан путь к MTProto-сессии (MTPROTO_SESSION_FILE)")
 	}

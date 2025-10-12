@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 
 	"tg-digest-bot/internal/adapters/repo"
@@ -34,15 +33,13 @@ func main() {
 	defer pool.Close()
 
 	repoAdapter := repo.NewPostgres(pool)
-	if cfg.RedisAddr == "" {
-		log.Fatal().Msg("scheduler: не указан адрес Redis (REDIS_ADDR)")
+	if cfg.RabbitURL == "" {
+		log.Fatal().Msg("scheduler: не указан адрес RabbitMQ (RABBITMQ_URL)")
 	}
-	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer redisClient.Close()
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		log.Fatal().Err(err).Msg("scheduler: не удалось подключиться к Redis")
+	digestQueue, err := queue.NewRabbitDigestQueue(cfg.RabbitURL, cfg.RabbitManagementURL, cfg.Queues.Digest)
+	if err != nil {
+		log.Fatal().Err(err).Msg("scheduler: не удалось инициализировать очередь RabbitMQ")
 	}
-	digestQueue := queue.NewRedisDigestQueue(redisClient, cfg.Queues.Digest)
 
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()

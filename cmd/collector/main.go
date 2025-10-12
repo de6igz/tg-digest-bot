@@ -11,7 +11,6 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 
 	"tg-digest-bot/internal/adapters/mtproto"
@@ -48,15 +47,13 @@ func main() {
 
 	repoAdapter := repo.NewPostgres(pool)
 
-	if cfg.RedisAddr == "" {
-		logger.Fatal().Msg("collector: не указан адрес Redis (REDIS_ADDR)")
+	if cfg.RabbitURL == "" {
+		logger.Fatal().Msg("collector: не указан адрес RabbitMQ (RABBITMQ_URL)")
 	}
-	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer redisClient.Close()
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		logger.Fatal().Err(err).Msg("collector: не удалось подключиться к Redis")
+	digestQueue, err := queue.NewRabbitDigestQueue(cfg.RabbitURL, cfg.RabbitManagementURL, cfg.Queues.Digest)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("collector: не удалось инициализировать очередь RabbitMQ")
 	}
-	digestQueue := queue.NewRedisDigestQueue(redisClient, cfg.Queues.Digest)
 
 	if cfg.Telegram.Token == "" {
 		logger.Fatal().Msg("collector: не указан токен Telegram (TG_BOT_TOKEN)")

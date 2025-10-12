@@ -27,7 +27,8 @@ type AppConfig struct {
 
 	PGDSN string `envconfig:"PG_DSN"`
 
-	RedisAddr string `envconfig:"REDIS_ADDR"`
+	RabbitURL           string `envconfig:"RABBITMQ_URL"`
+	RabbitManagementURL string `envconfig:"RABBITMQ_MANAGEMENT_URL"`
 
 	Limits struct {
 		FreeChannels int `envconfig:"FREE_CHANNELS_LIMIT" default:"5"`

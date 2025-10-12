@@ -10,10 +10,11 @@ services:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
-  cache:
-    image: redis:7
+  rabbitmq:
+    image: rabbitmq:3-management
     ports:
-      - "6379:6379"
+      - "5672:5672"
+      - "15672:15672"
   migrator:
     image: migrate/migrate:v4.17.0
     volumes:
@@ -30,7 +31,7 @@ services:
     env_file: ../.env.example
     depends_on:
       - db
-      - cache
+      - rabbitmq
   collector:
     build:
       context: ..
@@ -38,6 +39,7 @@ services:
     env_file: ../.env.example
     depends_on:
       - db
+      - rabbitmq
   scheduler:
     build:
       context: ..
@@ -45,6 +47,7 @@ services:
     env_file: ../.env.example
     depends_on:
       - db
+      - rabbitmq
   api:
     build:
       context: ..
