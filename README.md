@@ -7,8 +7,9 @@
 1. Скопируйте `.env.example` в `.env` и заполните значения токенов Telegram и доступа к БД.
 2. Подготовьте MTProto-сессию (например, выполните `go run github.com/gotd/td/cmd/telegram-auth` и авторизуйтесь под сервисным
    аккаунтом). Полученный JSON можно сохранить в таблицу `mtproto_sessions` вручную или с помощью утилиты импорта. Импортёр
-   поддерживает файлы `tg.session`, а также JSON-описания аккаунтов, которые продают вместе с файлом SQLite — из них будет
-   взята строковая сессия Telethon (`extra_params`) и автоматически преобразована к формату gotd:
+   поддерживает файлы `tg.session`, оригинальные SQLite-файлы Telethon (`*.session`), а также JSON-описания аккаунтов, которые
+   продают вместе с файлом SQLite — из них будет взята строковая сессия Telethon (`extra_params`) и автоматически преобразована к
+   формату gotd:
 
    ```bash
    go run ./cmd/mtproto-session-importer -file /путь/к/tg.session -name default
