@@ -393,6 +393,49 @@ func (p *Postgres) MarkDelivered(userID int64, date time.Time) error {
 	return err
 }
 
+// EnsureDigestJob регистрирует попытку обработки задачи дайджеста.
+func (p *Postgres) EnsureDigestJob(jobID string) (bool, int, error) {
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	var (
+		delivered sql.NullTime
+		attempts  int
+	)
+
+	start := time.Now()
+	err := p.pool.QueryRow(ctx, `
+INSERT INTO digest_job_statuses (job_id, attempts, updated_at)
+VALUES ($1, 1, now())
+ON CONFLICT (job_id) DO UPDATE
+    SET attempts = digest_job_statuses.attempts + 1,
+        updated_at = now()
+RETURNING delivered_at, attempts
+`, jobID).Scan(&delivered, &attempts)
+	metrics.ObserveNetworkRequest("postgres", "digest_job_statuses_upsert", "digest_job_statuses", start, err)
+	if err != nil {
+		return false, 0, err
+	}
+
+	return delivered.Valid, attempts, nil
+}
+
+// MarkDigestJobDelivered помечает задачу как доставленную.
+func (p *Postgres) MarkDigestJobDelivered(jobID string) error {
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	start := time.Now()
+	_, err := p.pool.Exec(ctx, `
+UPDATE digest_job_statuses
+SET delivered_at = COALESCE(delivered_at, now()),
+    updated_at = now()
+WHERE job_id = $1
+`, jobID)
+	metrics.ObserveNetworkRequest("postgres", "digest_job_statuses_mark_delivered", "digest_job_statuses", start, err)
+	return err
+}
+
 // WasDelivered проверяет наличие доставки.
 func (p *Postgres) WasDelivered(userID int64, date time.Time) (bool, error) {
 	var exists bool

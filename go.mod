@@ -3,15 +3,16 @@ module tg-digest-bot
 go 1.24.7
 
 require (
-	github.com/go-chi/chi/v5 v5.2.3
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
-	github.com/gotd/td v0.131.0
-	github.com/jackc/pgx/v5 v5.7.6
-	github.com/kelseyhightower/envconfig v1.4.0
-	github.com/prometheus/client_golang v1.23.2
-	github.com/rabbitmq/amqp091-go v1.10.0
-	github.com/redis/go-redis/v9 v9.14.0
-	github.com/rs/zerolog v1.34.0
+github.com/go-chi/chi/v5 v5.2.3
+github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+github.com/gotd/td v0.131.0
+github.com/jackc/pgx/v5 v5.7.6
+github.com/kelseyhightower/envconfig v1.4.0
+github.com/google/uuid v1.6.0
+github.com/prometheus/client_golang v1.23.2
+github.com/rabbitmq/amqp091-go v1.10.0
+github.com/redis/go-redis/v9 v9.14.0
+github.com/rs/zerolog v1.34.0
 )
 
 require (

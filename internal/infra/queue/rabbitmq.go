@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"tg-digest-bot/internal/domain"
@@ -90,6 +92,9 @@ func NewRabbitDigestQueue(amqpURL, queue string) (*RabbitDigestQueue, error) {
 
 // Enqueue публикует задачу в очередь RabbitMQ.
 func (q *RabbitDigestQueue) Enqueue(ctx context.Context, job domain.DigestJob) error {
+	if job.ID == "" {
+		job.ID = uuid.NewString()
+	}
 	payload, err := json.Marshal(job)
 	if err != nil {
 		return fmt.Errorf("marshal job: %w", err)
@@ -102,6 +107,7 @@ func (q *RabbitDigestQueue) Enqueue(ctx context.Context, job domain.DigestJob) e
 		Body:         payload,
 		Timestamp:    time.Now().UTC(),
 		Type:         string(job.Cause),
+		MessageId:    job.ID,
 	})
 	metrics.ObserveNetworkRequest("rabbitmq", "publish", q.queue, start, err)
 	if err != nil {
@@ -111,28 +117,46 @@ func (q *RabbitDigestQueue) Enqueue(ctx context.Context, job domain.DigestJob) e
 	return nil
 }
 
-// Pop блокирующе читает задачу из очереди.
-func (q *RabbitDigestQueue) Pop(ctx context.Context) (domain.DigestJob, error) {
+// Receive блокирующе читает задачу из очереди и возвращает функцию подтверждения.
+func (q *RabbitDigestQueue) Receive(ctx context.Context) (domain.DigestJob, domain.DigestAckFunc, error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return domain.DigestJob{}, ctx.Err()
+			return domain.DigestJob{}, nil, ctx.Err()
 		case delivery, ok := <-q.deliveries:
 			if !ok {
-				return domain.DigestJob{}, errors.New("rabbitmq: deliveries channel closed")
+				return domain.DigestJob{}, nil, errors.New("rabbitmq: deliveries channel closed")
 			}
 
 			var job domain.DigestJob
 			if err := json.Unmarshal(delivery.Body, &job); err != nil {
 				_ = delivery.Nack(false, false)
-				return domain.DigestJob{}, fmt.Errorf("decode job: %w", err)
+				return domain.DigestJob{}, nil, fmt.Errorf("decode job: %w", err)
 			}
 
-			if err := delivery.Ack(false); err != nil {
-				return domain.DigestJob{}, fmt.Errorf("ack message: %w", err)
+			if job.ID == "" {
+				switch {
+				case delivery.MessageId != "":
+					job.ID = delivery.MessageId
+				default:
+					job.ID = uuid.NewString()
+				}
 			}
 
-			return job, nil
+			var once sync.Once
+			ack := func(success bool) error {
+				var ackErr error
+				once.Do(func() {
+					if success {
+						ackErr = delivery.Ack(false)
+					} else {
+						ackErr = delivery.Nack(false, true)
+					}
+				})
+				return ackErr
+			}
+
+			return job, ack, nil
 		}
 	}
 }
