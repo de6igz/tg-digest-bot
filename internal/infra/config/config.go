@@ -21,7 +21,7 @@ type AppConfig struct {
 	} `envconfig:""`
 
 	MTProto struct {
-		SessionFile string `envconfig:"MTPROTO_SESSION_FILE"`
+		SessionName string `envconfig:"MTPROTO_SESSION_NAME" default:"default"`
 		GlobalRPS   int    `envconfig:"MTPROTO_GLOBAL_RPS" default:"20"`
 	} `envconfig:""`
 

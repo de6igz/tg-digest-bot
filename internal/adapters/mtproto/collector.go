@@ -404,4 +404,67 @@ func (s *SessionFile) StoreSession(ctx context.Context, data []byte) error {
 var (
 	_ session.Storage = (*SessionInMemory)(nil)
 	_ session.Storage = (*SessionFile)(nil)
+	_ session.Storage = (*SessionDB)(nil)
 )
+
+// SessionRepository описывает хранилище MTProto-сессий.
+type SessionRepository interface {
+	LoadMTProtoSession(ctx context.Context, name string) ([]byte, error)
+	StoreMTProtoSession(ctx context.Context, name string, data []byte) error
+}
+
+// SessionDB хранит MTProto-сессию в базе данных.
+type SessionDB struct {
+	name string
+	repo SessionRepository
+	mu   sync.RWMutex
+}
+
+// NewSessionDB создаёт хранилище MTProto-сессии в БД.
+func NewSessionDB(repo SessionRepository, name string) *SessionDB {
+	if name == "" {
+		name = "default"
+	}
+	return &SessionDB{repo: repo, name: name}
+}
+
+// LoadSession читает сессию из БД.
+func (s *SessionDB) LoadSession(ctx context.Context) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.repo == nil {
+		return nil, fmt.Errorf("repo is not configured")
+	}
+
+	data, err := s.repo.LoadMTProtoSession(ctx, s.name)
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			return nil, session.ErrNotFound
+		}
+		return nil, fmt.Errorf("чтение MTProto-сессии из БД: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, session.ErrNotFound
+	}
+	clone := make([]byte, len(data))
+	copy(clone, data)
+	return clone, nil
+}
+
+// StoreSession сохраняет сессию в БД.
+func (s *SessionDB) StoreSession(ctx context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.repo == nil {
+		return fmt.Errorf("repo is not configured")
+	}
+
+	tmp := make([]byte, len(data))
+	copy(tmp, data)
+	if err := s.repo.StoreMTProtoSession(ctx, s.name, tmp); err != nil {
+		return fmt.Errorf("запись MTProto-сессии в БД: %w", err)
+	}
+	return nil
+}

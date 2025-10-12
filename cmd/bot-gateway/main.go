@@ -48,10 +48,10 @@ func main() {
 	if err != nil {
 		logger.Fatal().Err(err).Msg("не удалось инициализировать очередь RabbitMQ")
 	}
-	if cfg.MTProto.SessionFile == "" {
-		logger.Fatal().Msg("не указан путь к MTProto-сессии (MTPROTO_SESSION_FILE)")
+	if cfg.MTProto.SessionName == "" {
+		logger.Fatal().Msg("не указано имя MTProto-сессии (MTPROTO_SESSION_NAME)")
 	}
-	collectorSession := mtproto.NewSessionFile(cfg.MTProto.SessionFile)
+	collectorSession := mtproto.NewSessionDB(repoAdapter, cfg.MTProto.SessionName)
 	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger), repoAdapter, cfg.Limits.FreeChannels)
 	scheduleService := schedule.NewService(repoAdapter)
 

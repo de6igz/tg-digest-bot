@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gotd/td/session"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -27,6 +28,16 @@ func NewPostgres(pool *pgxpool.Pool) *Postgres {
 
 func (p *Postgres) connCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
+}
+
+func (p *Postgres) connCtxWithParent(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return p.connCtx()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, 5*time.Second)
 }
 
 // UpsertByTGID реализует domain.UserRepo.
@@ -482,4 +493,51 @@ func (p *Postgres) ListDigestHistory(userID int64, fromDate time.Time) ([]domain
 		digests = append(digests, d)
 	}
 	return digests, rows.Err()
+}
+
+// LoadMTProtoSession загружает сохранённую MTProto-сессию.
+func (p *Postgres) LoadMTProtoSession(ctx context.Context, name string) ([]byte, error) {
+	ctx, cancel := p.connCtxWithParent(ctx)
+	defer cancel()
+
+	if name == "" {
+		name = "default"
+	}
+
+	var data []byte
+	start := time.Now()
+	err := p.pool.QueryRow(ctx, `SELECT data FROM mtproto_sessions WHERE name = $1`, name).Scan(&data)
+	metrics.ObserveNetworkRequest("postgres", "mtproto_sessions_load", "mtproto_sessions", start, err)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, session.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	clone := make([]byte, len(data))
+	copy(clone, data)
+	return clone, nil
+}
+
+// StoreMTProtoSession сохраняет MTProto-сессию.
+func (p *Postgres) StoreMTProtoSession(ctx context.Context, name string, data []byte) error {
+	ctx, cancel := p.connCtxWithParent(ctx)
+	defer cancel()
+
+	if name == "" {
+		name = "default"
+	}
+
+	tmp := make([]byte, len(data))
+	copy(tmp, data)
+
+	start := time.Now()
+	_, err := p.pool.Exec(ctx, `
+INSERT INTO mtproto_sessions (name, data, updated_at)
+VALUES ($1, $2, now())
+ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
+`, name, tmp)
+	metrics.ObserveNetworkRequest("postgres", "mtproto_sessions_store", "mtproto_sessions", start, err)
+	return err
 }

@@ -63,10 +63,10 @@ func main() {
 		logger.Fatal().Err(err).Msg("collector: не удалось создать бота")
 	}
 
-	if cfg.MTProto.SessionFile == "" {
-		logger.Fatal().Msg("collector: не указан путь к MTProto-сессии (MTPROTO_SESSION_FILE)")
+	if cfg.MTProto.SessionName == "" {
+		logger.Fatal().Msg("collector: не указано имя MTProto-сессии (MTPROTO_SESSION_NAME)")
 	}
-	collectorSession := mtproto.NewSessionFile(cfg.MTProto.SessionFile)
+	collectorSession := mtproto.NewSessionDB(repoAdapter, cfg.MTProto.SessionName)
 	collector, err := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("collector: не удалось создать MTProto клиента")
