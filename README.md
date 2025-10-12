@@ -6,8 +6,13 @@
 
 1. Скопируйте `.env.example` в `.env` и заполните значения токенов Telegram и доступа к БД.
 2. Подготовьте MTProto-сессию (например, выполните `go run github.com/gotd/td/cmd/telegram-auth` и авторизуйтесь под сервисным
-   аккаунтом). Полученный JSON сохраните в таблицу `mtproto_sessions`, указав имя из переменной окружения `MTPROTO_SESSION_NAME`
-   (по умолчанию `default`).
+   аккаунтом). Полученный JSON можно сохранить в таблицу `mtproto_sessions` вручную или с помощью утилиты импорта:
+
+   ```bash
+   go run ./cmd/mtproto-session-importer -file /путь/к/tg.session -name default
+   ```
+
+   Имя сессии должно совпадать со значением `MTPROTO_SESSION_NAME` (по умолчанию `default`).
 3. Запустите инфраструктуру и сервисы:
 
 ```bash
