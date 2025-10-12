@@ -17,6 +17,7 @@ const (
 
 // DigestJob содержит информацию о задаче построения дайджеста.
 type DigestJob struct {
+	ID          string         `json:"job_id,omitempty"`
 	UserTGID    int64          `json:"user_tg_id"`
 	ChatID      int64          `json:"chat_id"`
 	ChannelID   int64          `json:"channel_id,omitempty"`
@@ -29,12 +30,24 @@ type DigestJob struct {
 // DigestQueue описывает очередь задач на построение дайджестов.
 type DigestQueue interface {
 	Enqueue(ctx context.Context, job DigestJob) error
-	Pop(ctx context.Context) (DigestJob, error)
+	Receive(ctx context.Context) (DigestJob, DigestAckFunc, error)
 }
+
+// DigestAckFunc подтверждает успешную обработку или запрашивает повтор доставки задачи.
+type DigestAckFunc func(success bool) error
 
 // ScheduleTaskRepo отвечает за идемпотентное планирование задач дайджеста.
 type ScheduleTaskRepo interface {
 	// Acquire помечает выполнение задачи на указанное время и возвращает true,
 	// если запись была создана. При конфликте возвращает false без ошибки.
 	Acquire(userID int64, scheduledFor time.Time) (bool, error)
+}
+
+// DigestJobStatusRepo отвечает за отслеживание статуса доставки задач дайджеста.
+type DigestJobStatusRepo interface {
+	// EnsureDigestJob регистрирует попытку обработки и возвращает признак успешной доставки
+	// и номер текущей попытки.
+	EnsureDigestJob(jobID string) (delivered bool, attempt int, err error)
+	// MarkDigestJobDelivered помечает задачу как окончательно доставленную.
+	MarkDigestJobDelivered(jobID string) error
 }

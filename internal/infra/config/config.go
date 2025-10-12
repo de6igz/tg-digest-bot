@@ -27,7 +27,7 @@ type AppConfig struct {
 
 	PGDSN string `envconfig:"PG_DSN"`
 
-	RedisAddr string `envconfig:"REDIS_ADDR"`
+	RabbitURL string `envconfig:"RABBITMQ_URL"`
 
 	Limits struct {
 		FreeChannels int `envconfig:"FREE_CHANNELS_LIMIT" default:"5"`
@@ -42,7 +42,7 @@ type AppConfig struct {
 		APIKey  string        `envconfig:"OPENAI_API_KEY"`
 		BaseURL string        `envconfig:"OPENAI_BASE_URL"`
 		Model   string        `envconfig:"OPENAI_MODEL" default:"qwen3:4b"`
-		Timeout time.Duration `envconfig:"OPENAI_TIMEOUT" default:"120s"`
+		Timeout time.Duration `envconfig:"OPENAI_TIMEOUT" default:"1200s"`
 	} `envconfig:""`
 }
 

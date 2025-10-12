@@ -86,6 +86,14 @@ type ChatCompletionUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+func (c *ChatCompletionUsage) String() string {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return fmt.Sprintf("ChatCompletionResponse{error: %v}", err)
+	}
+	return string(b)
+}
+
 // CreateChatCompletion вызывает /chat/completions.
 func (c *Client) CreateChatCompletion(ctx context.Context, req ChatCompletionRequest) (ChatCompletionResponse, error) {
 	if c.apiKey == "" {

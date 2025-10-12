@@ -11,7 +11,6 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 
 	"tg-digest-bot/internal/adapters/mtproto"
@@ -48,15 +47,13 @@ func main() {
 
 	repoAdapter := repo.NewPostgres(pool)
 
-	if cfg.RedisAddr == "" {
-		logger.Fatal().Msg("collector: не указан адрес Redis (REDIS_ADDR)")
+	if cfg.RabbitURL == "" {
+		logger.Fatal().Msg("collector: не указан адрес RabbitMQ (RABBITMQ_URL)")
 	}
-	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer redisClient.Close()
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		logger.Fatal().Err(err).Msg("collector: не удалось подключиться к Redis")
+	digestQueue, err := queue.NewRabbitDigestQueue(cfg.RabbitURL, cfg.Queues.Digest)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("collector: не удалось инициализировать очередь RabbitMQ")
 	}
-	digestQueue := queue.NewRedisDigestQueue(redisClient, cfg.Queues.Digest)
 
 	if cfg.Telegram.Token == "" {
 		logger.Fatal().Msg("collector: не указан токен Telegram (TG_BOT_TOKEN)")
@@ -90,6 +87,7 @@ func main() {
 		digests:  repoAdapter,
 		users:    repoAdapter,
 		channels: repoAdapter,
+		statuses: repoAdapter,
 		service:  digestService,
 		bot:      botAPI,
 	}
@@ -105,13 +103,23 @@ type jobWorker struct {
 	digests  domain.DigestRepo
 	users    domain.UserRepo
 	channels domain.ChannelRepo
+	statuses domain.DigestJobStatusRepo
 	service  *digestusecase.Service
 	bot      *tgbotapi.BotAPI
 }
 
+const maxDeliveryAttempts = 5
+
+type jobOutcome int
+
+const (
+	jobOutcomeCompleted jobOutcome = iota
+	jobOutcomeRetry
+)
+
 func (w *jobWorker) Run(ctx context.Context) {
 	for {
-		job, err := w.queue.Pop(ctx)
+		job, ack, err := w.queue.Receive(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return
@@ -120,17 +128,73 @@ func (w *jobWorker) Run(ctx context.Context) {
 			time.Sleep(time.Second)
 			continue
 		}
-		w.handleJob(ctx, job)
+
+		jobLog := w.log.With().
+			Str("job_id", job.ID).
+			Int64("user", job.UserTGID).
+			Str("cause", string(job.Cause)).
+			Int64("channel", job.ChannelID).
+			Strs("tags", job.Tags).
+			Logger()
+
+		if job.ID == "" {
+			jobLog.Error().Msg("collector: получена задача без идентификатора, подтверждаем и пропускаем")
+			if err := ack(true); err != nil {
+				jobLog.Error().Err(err).Msg("collector: не удалось подтвердить задачу без идентификатора")
+			}
+			continue
+		}
+
+		delivered, attempt, err := w.statuses.EnsureDigestJob(job.ID)
+		if err != nil {
+			jobLog.Error().Err(err).Msg("collector: не удалось зарегистрировать задачу")
+			if ackErr := ack(false); ackErr != nil {
+				jobLog.Error().Err(ackErr).Msg("collector: не удалось вернуть задачу в очередь")
+			}
+			time.Sleep(time.Second)
+			continue
+		}
+
+		jobLog = jobLog.With().Int("attempt", attempt).Logger()
+
+		if delivered {
+			jobLog.Info().Msg("collector: задача уже была доставлена, подтверждаем")
+			if err := ack(true); err != nil {
+				jobLog.Error().Err(err).Msg("collector: не удалось подтвердить ранее доставленную задачу")
+			}
+			continue
+		}
+
+		outcome := w.handleJob(ctx, job, attempt, jobLog)
+
+		if outcome == jobOutcomeRetry && attempt < maxDeliveryAttempts {
+			jobLog.Warn().Msg("collector: задача завершилась ошибкой, повторим позже")
+			if err := ack(false); err != nil {
+				jobLog.Error().Err(err).Msg("collector: не удалось вернуть задачу после ошибки")
+			}
+			continue
+		}
+
+		if outcome == jobOutcomeRetry {
+			jobLog.Error().Msg("collector: достигнут предел попыток, помечаем задачу как завершённую")
+		}
+
+		if err := w.statuses.MarkDigestJobDelivered(job.ID); err != nil {
+			jobLog.Error().Err(err).Msg("collector: не удалось пометить задачу доставленной")
+			if ackErr := ack(false); ackErr != nil {
+				jobLog.Error().Err(ackErr).Msg("collector: не удалось вернуть задачу после ошибки статуса")
+			}
+			time.Sleep(time.Second)
+			continue
+		}
+
+		if err := ack(true); err != nil {
+			jobLog.Error().Err(err).Msg("collector: не удалось подтвердить задачу")
+		}
 	}
 }
 
-func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
-	jobLog := w.log.With().
-		Int64("user", job.UserTGID).
-		Str("cause", string(job.Cause)).
-		Int64("channel", job.ChannelID).
-		Strs("tags", job.Tags).
-		Logger()
+func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob, attempt int, jobLog zerolog.Logger) jobOutcome {
 	if job.ChatID == 0 {
 		job.ChatID = job.UserTGID
 	}
@@ -141,17 +205,17 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 	if err != nil {
 		jobLog.Error().Err(err).Msg("collector: пользователь не найден")
 		w.sendPlain(job.ChatID, "Не удалось найти ваш профиль. Отправьте /start в боте и попробуйте снова.")
-		return
+		return jobOutcomeCompleted
 	}
 	userChannels, err := w.channels.ListUserChannels(user.ID, 100, 0)
 	if err != nil {
 		jobLog.Error().Err(err).Msg("collector: не удалось получить каналы")
 		w.sendPlain(job.ChatID, "Не удалось получить список каналов. Попробуйте позже.")
-		return
+		return jobOutcomeCompleted
 	}
 	if len(userChannels) == 0 {
 		w.sendPlain(job.ChatID, "Сначала добавьте хотя бы один канал командой /add")
-		return
+		return jobOutcomeCompleted
 	}
 	var channels []domain.Channel
 	switch {
@@ -164,7 +228,7 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 		}
 		if len(channels) == 0 {
 			w.sendPlain(job.ChatID, "Канал не найден среди ваших подписок")
-			return
+			return jobOutcomeCompleted
 		}
 	case len(job.Tags) > 0:
 		matched := make([]domain.Channel, 0)
@@ -175,7 +239,7 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 		}
 		if len(matched) == 0 {
 			w.sendPlain(job.ChatID, "Не найдено каналов с такими тегами")
-			return
+			return jobOutcomeCompleted
 		}
 		channels = matched
 	default:
@@ -187,7 +251,7 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 	if err := w.service.CollectNow(ctx, channels); err != nil {
 		jobLog.Error().Err(err).Msg("collector: ошибка сбора постов")
 		w.sendPlain(job.ChatID, "Не удалось собрать дайджест, попробуйте позже.")
-		return
+		return jobOutcomeCompleted
 	}
 	var (
 		digest domain.Digest
@@ -204,15 +268,15 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 	if err != nil {
 		if errors.Is(err, digestusecase.ErrChannelNotFound) {
 			w.sendPlain(job.ChatID, "Канал недоступен для дайджеста")
-			return
+			return jobOutcomeCompleted
 		}
 		if errors.Is(err, digestusecase.ErrNoChannels) {
 			w.sendPlain(job.ChatID, "Сначала добавьте хотя бы один канал командой /add")
-			return
+			return jobOutcomeCompleted
 		}
 		jobLog.Error().Err(err).Msg("collector: ошибка построения дайджеста")
 		w.sendPlain(job.ChatID, "Не удалось построить дайджест, попробуйте позже.")
-		return
+		return jobOutcomeCompleted
 	}
 	if len(digest.Items) == 0 {
 		switch {
@@ -223,7 +287,7 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 		default:
 			w.sendPlain(job.ChatID, "За последние 24 часа ничего не найдено")
 		}
-		return
+		return jobOutcomeCompleted
 	}
 	if job.ChannelID == 0 && len(job.Tags) == 0 {
 		if err := w.persistDigest(digest); err != nil {
@@ -232,12 +296,13 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob) {
 	}
 	message := digestusecase.FormatDigest(digest)
 	if err := w.sendDigest(job.ChatID, message); err != nil {
-		if job.Cause == domain.DigestCauseManual {
+		if job.Cause == domain.DigestCauseManual && attempt == 1 {
 			w.sendPlain(job.ChatID, "Не удалось собрать дайджест, попробуйте позже.")
 		}
 		jobLog.Error().Err(err).Msg("collector: отправка дайджеста")
-
+		return jobOutcomeRetry
 	}
+	return jobOutcomeCompleted
 }
 
 func (w *jobWorker) persistDigest(d domain.Digest) error {
