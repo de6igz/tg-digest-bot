@@ -4,7 +4,7 @@ PYTHON ?= python3
 GO ?= go
 
 TELETHON_EXPORT ?= $(PYTHON) scripts/export_telethon_session.py
-MTPROTO_IMPORT ?= $(GO) run ./cmd/mtproto-session-importer
+MTPROTO_IMPORT ?= env PG_DSN=postgres://postgres:postgres@localhost:5432/tgdigest?sslmode=disable $(GO) run ./cmd/mtproto-session-importer
 
 define require_var
 $(if $($1),,$(error $1 is required))
