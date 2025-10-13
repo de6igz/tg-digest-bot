@@ -50,6 +50,7 @@ type AppConfig struct {
 		Timeout         time.Duration `envconfig:"TOCHKA_TIMEOUT" default:"15s"`
 		NotificationURL string        `envconfig:"TOCHKA_NOTIFICATION_URL"`
 		WebhookSecret   string        `envconfig:"TOCHKA_WEBHOOK_SECRET"`
+		WebhookKey      string        `envconfig:"TOCHKA_WEBHOOK_PUBLIC_KEY"`
 	} `envconfig:""`
 }
 

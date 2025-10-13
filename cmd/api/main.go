@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"io"
@@ -45,6 +46,14 @@ func main() {
 		AccessToken: cfg.Tochka.AccessToken,
 		Timeout:     cfg.Tochka.Timeout,
 	})
+	var webhookPublicKey *rsa.PublicKey
+	if cfg.Tochka.WebhookKey != "" {
+		key, err := tochka.ParseRSAPublicKeyFromJWK([]byte(cfg.Tochka.WebhookKey))
+		if err != nil {
+			log.Fatal().Err(err).Msg("api: invalid tochka webhook public key")
+		}
+		webhookPublicKey = key
+	}
 	sbpService := billingusecase.NewService(repoAdapter, tochkaClient, log.With().Str("component", "billing_sbp").Logger())
 
 	r := chi.NewRouter()
@@ -138,8 +147,17 @@ func main() {
 			writeError(w, http.StatusBadRequest, "failed to read body")
 			return
 		}
-		notification, err := tochka.ParseIncomingPaymentNotification(body)
+		var notification tochka.IncomingPaymentNotification
+		if webhookPublicKey != nil {
+			notification, err = tochka.ParseIncomingPaymentNotificationJWT(body, webhookPublicKey)
+		} else {
+			notification, err = tochka.ParseIncomingPaymentNotification(body)
+		}
 		if err != nil {
+			if errors.Is(err, tochka.ErrInvalidWebhookSignature) {
+				writeError(w, http.StatusUnauthorized, "invalid webhook signature")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "invalid webhook payload")
 			return
 		}
