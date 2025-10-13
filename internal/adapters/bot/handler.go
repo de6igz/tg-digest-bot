@@ -118,12 +118,27 @@ func (h *Handler) handleStart(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 	locale := msg.From.LanguageCode
-	user, err := h.users.UpsertByTGID(msg.From.ID, locale, "")
+	user, created, err := h.users.UpsertByTGID(msg.From.ID, locale, "")
 	if err != nil {
 		h.reply(msg.Chat.ID, fmt.Sprintf("Ошибка сохранения профиля: %v", err), nil)
 		return
 	}
-	h.reply(msg.Chat.ID, h.buildStartMessage(user.Plan()), h.mainKeyboard())
+	payload := ""
+	if msg.Text != "" {
+		fields := strings.Fields(msg.Text)
+		if len(fields) > 1 {
+			payload = fields[1]
+		}
+	}
+	if payload != "" && (created || user.ReferredByID == nil) {
+		updated, _, applyErr := h.users.ApplyReferral(payload, user.ID)
+		if applyErr != nil {
+			h.log.Error().Err(applyErr).Int64("user", msg.From.ID).Msg("не удалось применить реферальный код")
+		} else {
+			user = updated
+		}
+	}
+	h.reply(msg.Chat.ID, h.buildStartMessage(user), h.mainKeyboard())
 }
 
 func (h *Handler) handleHelp(chatID int64) {
@@ -800,7 +815,8 @@ func (h *Handler) mainKeyboard() *tgbotapi.InlineKeyboardMarkup {
 	return &buttons
 }
 
-func (h *Handler) buildStartMessage(plan domain.UserPlan) string {
+func (h *Handler) buildStartMessage(user domain.User) string {
+	plan := user.Plan()
 	limitLine := "   Вам доступно неограниченное количество каналов."
 	if plan.ChannelLimit > 0 {
 		limitLine = fmt.Sprintf("   Вам доступно до %d каналов.", plan.ChannelLimit)
@@ -829,6 +845,22 @@ func (h *Handler) buildStartMessage(plan domain.UserPlan) string {
 		"4. 🗓 Настройте автоматическую рассылку — кнопка \"Расписание\" или команда /schedule 21:30.",
 		"",
 		"Под кнопкой \"ℹ️ Помощь\" вы найдёте полный список команд и примеров.",
+	}
+	code := strings.TrimSpace(user.ReferralCode)
+	if code != "" {
+		link := ""
+		if username := strings.TrimSpace(h.bot.Self.UserName); username != "" {
+			link = fmt.Sprintf("https://t.me/%s?start=%s", username, code)
+		}
+		lines = append(lines,
+			"",
+			"🎁 Реферальная программа:",
+			fmt.Sprintf("• Пригласите 3 друзей — тариф Plus, 5 — Pro. Сейчас приглашено: %d.", user.ReferralsCount),
+		)
+		if link != "" {
+			lines = append(lines, fmt.Sprintf("• Ваша ссылка: %s", link))
+		}
+		lines = append(lines, "• Делитесь ссылкой, чтобы получать больше дайджестов.")
 	}
 	return strings.Join(lines, "\n")
 }

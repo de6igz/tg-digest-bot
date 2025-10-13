@@ -49,6 +49,11 @@ var plans = map[UserRole]UserPlan{
 	},
 }
 
+const (
+	referralsForPlus = 3
+	referralsForPro  = 5
+)
+
 // PlanForRole возвращает тариф для роли.
 func PlanForRole(role UserRole) UserPlan {
 	if plan, ok := plans[UserRole(strings.ToLower(string(role)))]; ok {
@@ -60,6 +65,27 @@ func PlanForRole(role UserRole) UserPlan {
 // Plan возвращает тариф пользователя.
 func (u User) Plan() UserPlan {
 	return PlanForRole(u.Role)
+}
+
+// RoleForReferralProgress возвращает новую роль с учётом количества приглашённых друзей.
+func RoleForReferralProgress(current UserRole, referrals int) UserRole {
+	switch current {
+	case UserRoleDeveloper:
+		return current
+	}
+	if referrals >= referralsForPro {
+		if current == UserRolePro {
+			return current
+		}
+		return UserRolePro
+	}
+	if referrals >= referralsForPlus {
+		if current == UserRolePro || current == UserRolePlus {
+			return current
+		}
+		return UserRolePlus
+	}
+	return current
 }
 
 // ManualRequestState описывает результат попытки зарезервировать ручной запрос.

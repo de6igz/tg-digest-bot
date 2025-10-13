@@ -14,8 +14,10 @@ type stubRepo struct {
 	userChannels []domain.UserChannel
 }
 
-func (s *stubRepo) UpsertByTGID(_ int64, _ string, _ string) (domain.User, error) { return s.user, nil }
-func (s *stubRepo) GetByTGID(_ int64) (domain.User, error)                        { return s.user, nil }
+func (s *stubRepo) UpsertByTGID(_ int64, _ string, _ string) (domain.User, bool, error) {
+	return s.user, false, nil
+}
+func (s *stubRepo) GetByTGID(_ int64) (domain.User, error) { return s.user, nil }
 func (s *stubRepo) ListForDailyTime(_ time.Time) ([]domain.User, error) {
 	return []domain.User{s.user}, nil
 }
@@ -23,6 +25,9 @@ func (s *stubRepo) UpdateDailyTime(_ int64, _ time.Time) error { return nil }
 func (s *stubRepo) DeleteUserData(_ int64) error               { return nil }
 func (s *stubRepo) ReserveManualRequest(_ int64, _ time.Time) (domain.ManualRequestState, error) {
 	return domain.ManualRequestState{Allowed: true, Plan: domain.PlanForRole(domain.UserRoleFree)}, nil
+}
+func (s *stubRepo) ApplyReferral(_ string, _ int64) (domain.User, bool, error) {
+	return s.user, false, nil
 }
 func (s *stubRepo) UpsertChannel(_ domain.ChannelMeta) (domain.Channel, error) {
 	return domain.Channel{}, nil

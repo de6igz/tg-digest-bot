@@ -15,6 +15,9 @@ type User struct {
 	ManualRequestsTotal int
 	ManualRequestsToday int
 	ManualRequestsDate  *time.Time
+	ReferralCode        string
+	ReferralsCount      int
+	ReferredByID        *int64
 }
 
 // Channel описывает публичный канал Telegram.
