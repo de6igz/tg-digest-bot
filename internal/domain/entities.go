@@ -87,3 +87,14 @@ type Digest struct {
 	Items       []DigestItem
 	DeliveredAt *time.Time
 }
+
+// MTProtoAccount описывает авторизационные данные Telegram-аккаунта.
+type MTProtoAccount struct {
+	Name     string
+	Pool     string
+	APIID    int
+	APIHash  string
+	Phone    string
+	Username string
+	RawJSON  []byte
+}

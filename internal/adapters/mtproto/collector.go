@@ -25,20 +25,48 @@ import (
 )
 
 // Collector реализует загрузку сообщений через gotd.
-type Collector struct {
-	apiID   int
-	apiHash string
-	storage session.Storage
-	log     zerolog.Logger
-	timeout time.Duration
+type Account struct {
+	Name    string
+	APIID   int
+	APIHash string
+	Storage session.Storage
 }
 
-// NewCollector создаёт MTProto клиент на базе токенов.
-func NewCollector(apiID int, apiHash string, storage session.Storage, log zerolog.Logger) (*Collector, error) {
-	if storage == nil {
-		return nil, fmt.Errorf("session storage is required")
+func (a Account) validate() error {
+	if a.Storage == nil {
+		return fmt.Errorf("account %q: session storage is required", a.Name)
 	}
-	return &Collector{apiID: apiID, apiHash: apiHash, storage: storage, log: log, timeout: 90 * time.Second}, nil
+	if a.APIID == 0 {
+		return fmt.Errorf("account %q: api_id is required", a.Name)
+	}
+	if a.APIHash == "" {
+		return fmt.Errorf("account %q: api_hash is required", a.Name)
+	}
+	if a.Name == "" {
+		return fmt.Errorf("account name is required")
+	}
+	return nil
+}
+
+type Collector struct {
+	accounts []Account
+	log      zerolog.Logger
+	timeout  time.Duration
+}
+
+// NewCollector создаёт MTProto клиент на базе пула аккаунтов.
+func NewCollector(accounts []Account, log zerolog.Logger) (*Collector, error) {
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("at least one MTProto account is required")
+	}
+	checked := make([]Account, 0, len(accounts))
+	for _, account := range accounts {
+		if err := account.validate(); err != nil {
+			return nil, err
+		}
+		checked = append(checked, account)
+	}
+	return &Collector{accounts: checked, log: log, timeout: 90 * time.Second}, nil
 }
 
 // Collect24h собирает историю канала.
@@ -224,16 +252,24 @@ func hashMessage(channelID int64, messageID int, text string) string {
 
 // Resolver проверяет публичность каналов через MTProto.
 type Resolver struct {
-	apiID   int
-	apiHash string
-	storage session.Storage
-	log     zerolog.Logger
-	timeout time.Duration
+	accounts []Account
+	log      zerolog.Logger
+	timeout  time.Duration
 }
 
 // NewResolver создаёт резолвер с MTProto клиентом.
-func NewResolver(apiID int, apiHash string, storage session.Storage, log zerolog.Logger) *Resolver {
-	return &Resolver{apiID: apiID, apiHash: apiHash, storage: storage, log: log, timeout: 20 * time.Second}
+func NewResolver(accounts []Account, log zerolog.Logger) (*Resolver, error) {
+	if len(accounts) == 0 {
+		return nil, fmt.Errorf("at least one MTProto account is required")
+	}
+	checked := make([]Account, 0, len(accounts))
+	for _, account := range accounts {
+		if err := account.validate(); err != nil {
+			return nil, err
+		}
+		checked = append(checked, account)
+	}
+	return &Resolver{accounts: checked, log: log, timeout: 20 * time.Second}, nil
 }
 
 // ResolvePublic возвращает ChannelMeta.
@@ -280,21 +316,11 @@ func (r *Resolver) ResolvePublic(alias string) (domain.ChannelMeta, error) {
 }
 
 func (c *Collector) withClient(fn func(ctx context.Context, api *tg.Client) error) error {
-	client := telegram.NewClient(c.apiID, c.apiHash, telegram.Options{SessionStorage: c.storage})
-	return client.Run(context.Background(), func(ctx context.Context) error {
-		ctx, cancel := context.WithTimeout(ctx, c.timeout)
-		defer cancel()
-		return fn(ctx, client.API())
-	})
+	return runWithAccounts(c.accounts, c.timeout, c.log, "collector", fn)
 }
 
 func (r *Resolver) withClient(fn func(ctx context.Context, api *tg.Client) error) error {
-	client := telegram.NewClient(r.apiID, r.apiHash, telegram.Options{SessionStorage: r.storage})
-	return client.Run(context.Background(), func(ctx context.Context) error {
-		ctx, cancel := context.WithTimeout(ctx, r.timeout)
-		defer cancel()
-		return fn(ctx, client.API())
-	})
+	return runWithAccounts(r.accounts, r.timeout, r.log, "resolver", fn)
 }
 
 func normalizeAlias(alias string) (string, error) {
@@ -314,6 +340,27 @@ func normalizeAlias(alias string) (string, error) {
 		trimmed = parts[0]
 	}
 	return trimmed, nil
+}
+
+func runWithAccounts(accounts []Account, timeout time.Duration, log zerolog.Logger, component string, fn func(ctx context.Context, api *tg.Client) error) error {
+	var attemptErrors []string
+	for _, account := range accounts {
+		client := telegram.NewClient(account.APIID, account.APIHash, telegram.Options{SessionStorage: account.Storage})
+		err := client.Run(context.Background(), func(ctx context.Context) error {
+			ctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			return fn(ctx, client.API())
+		})
+		if err == nil {
+			return nil
+		}
+		log.Warn().Err(err).Str("account", account.Name).Msg(component + ": MTProto вызов завершился ошибкой, пробуем следующую сессию")
+		attemptErrors = append(attemptErrors, fmt.Sprintf("%s: %v", account.Name, err))
+	}
+	if len(attemptErrors) == 0 {
+		return fmt.Errorf("%s: нет доступных MTProto аккаунтов", component)
+	}
+	return fmt.Errorf("%s: все MTProto аккаунты завершились ошибкой: %s", component, strings.Join(attemptErrors, "; "))
 }
 
 // SessionInMemory хранит сессию в памяти (используется в тестах).
@@ -404,4 +451,80 @@ func (s *SessionFile) StoreSession(ctx context.Context, data []byte) error {
 var (
 	_ session.Storage = (*SessionInMemory)(nil)
 	_ session.Storage = (*SessionFile)(nil)
+	_ session.Storage = (*SessionDB)(nil)
 )
+
+// SessionRepository описывает хранилище MTProto-сессий.
+type SessionRepository interface {
+	LoadMTProtoSession(ctx context.Context, name string) ([]byte, error)
+	StoreMTProtoSession(ctx context.Context, name string, data []byte) error
+	ListMTProtoAccounts(ctx context.Context, pool string) ([]domain.MTProtoAccount, error)
+	UpsertMTProtoAccount(ctx context.Context, account domain.MTProtoAccount) error
+}
+
+// SessionDB хранит MTProto-сессию в базе данных.
+type SessionDB struct {
+	name string
+	repo SessionRepository
+	mu   sync.RWMutex
+}
+
+// NewSessionDB создаёт хранилище MTProto-сессии в БД.
+func NewSessionDB(repo SessionRepository, name string) *SessionDB {
+	if name == "" {
+		name = "default"
+	}
+	return &SessionDB{repo: repo, name: name}
+}
+
+// LoadSession читает сессию из БД.
+func (s *SessionDB) LoadSession(ctx context.Context) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.repo == nil {
+		return nil, fmt.Errorf("repo is not configured")
+	}
+
+	data, err := s.repo.LoadMTProtoSession(ctx, s.name)
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			return nil, session.ErrNotFound
+		}
+		return nil, fmt.Errorf("чтение MTProto-сессии из БД: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, session.ErrNotFound
+	}
+
+	normalized, converted, err := NormalizeSessionBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("подготовка MTProto-сессии: %w", err)
+	}
+	if converted {
+		if err := s.repo.StoreMTProtoSession(ctx, s.name, normalized); err != nil {
+			return nil, fmt.Errorf("обновление MTProto-сессии: %w", err)
+		}
+	}
+
+	clone := make([]byte, len(normalized))
+	copy(clone, normalized)
+	return clone, nil
+}
+
+// StoreSession сохраняет сессию в БД.
+func (s *SessionDB) StoreSession(ctx context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.repo == nil {
+		return fmt.Errorf("repo is not configured")
+	}
+
+	tmp := make([]byte, len(data))
+	copy(tmp, data)
+	if err := s.repo.StoreMTProtoSession(ctx, s.name, tmp); err != nil {
+		return fmt.Errorf("запись MTProto-сессии в БД: %w", err)
+	}
+	return nil
+}

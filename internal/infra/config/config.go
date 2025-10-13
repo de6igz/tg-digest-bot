@@ -16,12 +16,10 @@ type AppConfig struct {
 	Telegram struct {
 		Token      string `envconfig:"TG_BOT_TOKEN"`
 		WebhookURL string `envconfig:"TG_WEBHOOK_URL"`
-		APIID      int    `envconfig:"TG_API_ID"`
-		APIHash    string `envconfig:"TG_API_HASH"`
 	} `envconfig:""`
 
 	MTProto struct {
-		SessionFile string `envconfig:"MTPROTO_SESSION_FILE"`
+		SessionName string `envconfig:"MTPROTO_SESSION_NAME" default:"default"`
 		GlobalRPS   int    `envconfig:"MTPROTO_GLOBAL_RPS" default:"20"`
 	} `envconfig:""`
 

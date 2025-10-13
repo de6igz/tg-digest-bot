@@ -5,8 +5,25 @@
 ## Быстрый старт
 
 1. Скопируйте `.env.example` в `.env` и заполните значения токенов Telegram и доступа к БД.
-2. Подготовьте файл MTProto-сессии, указанный в `MTPROTO_SESSION_FILE` (например, выполните `go run github.com/gotd/td/cmd/telegram-auth`
-   и авторизуйтесь под сервисным аккаунтом, после чего сохраните сессию в нужный путь).
+2. Подготовьте MTProto-аккаунты. Установите зависимость `telethon` (`pip install telethon`), после чего выполните:
+
+   ```bash
+   make mtproto-import-from-telethon \
+     METADATA=/путь/к/аккаунту.json \
+     SESSION=/путь/к/аккаунту.session \
+     POOL=default # опционально, по умолчанию default
+   ```
+
+   Цель Make создаст bundle через `scripts/export_telethon_session.py`, положит его по умолчанию в `build/mtproto/<имя>.bundle.json`
+   (можно задать `BUNDLE=/путь/к/bundle.json`) и передаст его Go-импортёру. При необходимости можно вызвать подцели отдельно:
+
+   ```bash
+   make mtproto-bundle METADATA=... SESSION=... OUTPUT=... [NAME=...] [POOL=...] [API_ID=...] [API_HASH=...]
+   make mtproto-import BUNDLE=... [NAME=...] [POOL=...]
+   ```
+
+   Импортёр берёт API ID/Hash и Telethon string session из bundle, конвертирует сессию в формат gotd и сохраняет аккаунт в выбранный
+   пул. В рантайме сервисы используют пул, указанный в переменной `MTPROTO_SESSION_NAME`, перебирая аккаунты при ошибках MTProto.
 3. Запустите инфраструктуру и сервисы:
 
 ```bash
@@ -58,4 +75,5 @@ make test
 
 - `scripts/dev.sh` — запуск docker-compose стека.
 - `scripts/migrate.sh` — применение миграций через golang-migrate.
+- `scripts/export_telethon_session.py` — подготовка JSON bundle с данными MTProto-аккаунта из Telethon файлов.
 
