@@ -20,6 +20,15 @@ type User struct {
 	ReferredByID        *int64
 }
 
+// ReferralResult описывает применение реферального кода.
+type ReferralResult struct {
+	User             User
+	Applied          bool
+	Referrer         *User
+	ReferrerUpgraded bool
+	PreviousRole     UserRole
+}
+
 // Channel описывает публичный канал Telegram.
 type Channel struct {
 	ID          int64

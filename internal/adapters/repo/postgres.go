@@ -332,7 +332,7 @@ WHERE id=$1
 }
 
 // ApplyReferral закрепляет реферала за пользователем и обновляет награды.
-func (p *Postgres) ApplyReferral(code string, newUserID int64) (domain.User, bool, error) {
+func (p *Postgres) ApplyReferral(code string, newUserID int64) (domain.ReferralResult, error) {
 	ctx, cancel := p.connCtx()
 	defer cancel()
 
@@ -340,7 +340,7 @@ func (p *Postgres) ApplyReferral(code string, newUserID int64) (domain.User, boo
 	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{})
 	metrics.ObserveNetworkRequest("postgres", "begin_tx", "users", start, err)
 	if err != nil {
-		return domain.User{}, false, err
+		return domain.ReferralResult{}, err
 	}
 	defer tx.Rollback(ctx)
 
@@ -357,7 +357,7 @@ FROM users WHERE id=$1 FOR UPDATE
 `, newUserID).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy)
 	metrics.ObserveNetworkRequest("postgres", "users_get_for_update", "users", start, err)
 	if err != nil {
-		return domain.User{}, false, err
+		return domain.ReferralResult{}, err
 	}
 	if manualDate.Valid {
 		ts := manualDate.Time
@@ -374,9 +374,9 @@ FROM users WHERE id=$1 FOR UPDATE
 		err = tx.Commit(ctx)
 		metrics.ObserveNetworkRequest("postgres", "commit", "users", start, err)
 		if err != nil {
-			return domain.User{}, false, err
+			return domain.ReferralResult{}, err
 		}
-		return user, false, nil
+		return domain.ReferralResult{User: user}, nil
 	}
 
 	var (
@@ -396,12 +396,12 @@ FROM users WHERE referral_code=$1 FOR UPDATE
 		err = tx.Commit(ctx)
 		metrics.ObserveNetworkRequest("postgres", "commit", "users", start, err)
 		if err != nil {
-			return domain.User{}, false, err
+			return domain.ReferralResult{}, err
 		}
-		return user, false, nil
+		return domain.ReferralResult{User: user}, nil
 	}
 	if err != nil {
-		return domain.User{}, false, err
+		return domain.ReferralResult{}, err
 	}
 	if refManualDate.Valid {
 		ts := refManualDate.Time
@@ -416,30 +416,32 @@ FROM users WHERE referral_code=$1 FOR UPDATE
 		err = tx.Commit(ctx)
 		metrics.ObserveNetworkRequest("postgres", "commit", "users", start, err)
 		if err != nil {
-			return domain.User{}, false, err
+			return domain.ReferralResult{}, err
 		}
-		return user, false, nil
+		return domain.ReferralResult{User: user}, nil
 	}
 
 	start = time.Now()
 	res, err := tx.Exec(ctx, `UPDATE users SET referred_by=$2, updated_at=now() WHERE id=$1 AND referred_by IS NULL`, user.ID, referrer.ID)
 	metrics.ObserveNetworkRequest("postgres", "users_apply_referral", "users", start, err)
 	if err != nil {
-		return domain.User{}, false, err
+		return domain.ReferralResult{}, err
 	}
 	if res.RowsAffected() == 0 {
 		start = time.Now()
 		err = tx.Commit(ctx)
 		metrics.ObserveNetworkRequest("postgres", "commit", "users", start, err)
 		if err != nil {
-			return domain.User{}, false, err
+			return domain.ReferralResult{}, err
 		}
-		return user, false, nil
+		return domain.ReferralResult{User: user}, nil
 	}
 
 	newCount := referrer.ReferralsCount + 1
 	newRole := domain.RoleForReferralProgress(referrer.Role, newCount)
-	if newRole != referrer.Role {
+	previousRole := referrer.Role
+	upgraded := newRole != referrer.Role
+	if upgraded {
 		start = time.Now()
 		_, err = tx.Exec(ctx, `UPDATE users SET referrals_count=$2, role=$3, updated_at=now() WHERE id=$1`, referrer.ID, newCount, newRole)
 		metrics.ObserveNetworkRequest("postgres", "users_update_referrer_with_role", "users", start, err)
@@ -449,7 +451,7 @@ FROM users WHERE referral_code=$1 FOR UPDATE
 		metrics.ObserveNetworkRequest("postgres", "users_update_referrer", "users", start, err)
 	}
 	if err != nil {
-		return domain.User{}, false, err
+		return domain.ReferralResult{}, err
 	}
 
 	start = time.Now()
@@ -459,7 +461,7 @@ FROM users WHERE id=$1
 `, user.ID).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy)
 	metrics.ObserveNetworkRequest("postgres", "users_get_after_referral", "users", start, err)
 	if err != nil {
-		return domain.User{}, false, err
+		return domain.ReferralResult{}, err
 	}
 	if manualDate.Valid {
 		ts := manualDate.Time
@@ -475,12 +477,44 @@ FROM users WHERE id=$1
 	}
 
 	start = time.Now()
+	err = tx.QueryRow(ctx, `
+SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by
+FROM users WHERE id=$1
+`, referrer.ID).Scan(&referrer.ID, &referrer.TGUserID, &referrer.Locale, &referrer.Timezone, &referrer.DailyTime, &referrer.CreatedAt, &referrer.UpdatedAt, &referrer.Role, &referrer.ManualRequestsTotal, &referrer.ManualRequestsToday, &refManualDate, &referrer.ReferralCode, &referrer.ReferralsCount, &refReferredBy)
+	metrics.ObserveNetworkRequest("postgres", "users_get_referrer_after_update", "users", start, err)
+	if err != nil {
+		return domain.ReferralResult{}, err
+	}
+	if refManualDate.Valid {
+		ts := refManualDate.Time
+		referrer.ManualRequestsDate = &ts
+	} else {
+		referrer.ManualRequestsDate = nil
+	}
+	if refReferredBy.Valid {
+		id := refReferredBy.Int64
+		referrer.ReferredByID = &id
+	} else {
+		referrer.ReferredByID = nil
+	}
+
+	start = time.Now()
 	err = tx.Commit(ctx)
 	metrics.ObserveNetworkRequest("postgres", "commit", "users", start, err)
 	if err != nil {
-		return domain.User{}, false, err
+		return domain.ReferralResult{}, err
 	}
-	return user, true, nil
+
+	result := domain.ReferralResult{
+		User:     user,
+		Applied:  true,
+		Referrer: &referrer,
+	}
+	if upgraded {
+		result.ReferrerUpgraded = true
+		result.PreviousRole = previousRole
+	}
+	return result, nil
 }
 
 func sameDay(a, b time.Time) bool {

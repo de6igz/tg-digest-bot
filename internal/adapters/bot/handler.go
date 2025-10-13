@@ -130,15 +130,32 @@ func (h *Handler) handleStart(ctx context.Context, msg *tgbotapi.Message) {
 			payload = fields[1]
 		}
 	}
+	var referralResult domain.ReferralResult
 	if payload != "" && (created || user.ReferredByID == nil) {
-		updated, _, applyErr := h.users.ApplyReferral(payload, user.ID)
+		result, applyErr := h.users.ApplyReferral(payload, user.ID)
 		if applyErr != nil {
 			h.log.Error().Err(applyErr).Int64("user", msg.From.ID).Msg("не удалось применить реферальный код")
 		} else {
-			user = updated
+			user = result.User
+			referralResult = result
 		}
 	}
-	h.reply(msg.Chat.ID, h.buildStartMessage(user), h.mainKeyboard())
+
+	sections := h.buildStartSections(user)
+	for i, section := range sections {
+		if strings.TrimSpace(section) == "" {
+			continue
+		}
+		if i == 0 {
+			h.reply(msg.Chat.ID, section, h.mainKeyboard())
+			continue
+		}
+		h.reply(msg.Chat.ID, section, nil)
+	}
+
+	if referralResult.ReferrerUpgraded && referralResult.Referrer != nil {
+		h.notifyPlanUpgrade(*referralResult.Referrer, referralResult.PreviousRole)
+	}
 }
 
 func (h *Handler) handleHelp(chatID int64) {
@@ -396,6 +413,10 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 		h.reply(cb.Message.Chat.ID, "Отправьте /add @alias", nil)
 	case data == "help_menu":
 		h.reply(cb.Message.Chat.ID, h.buildHelpMessage(), h.mainKeyboard())
+	case data == "plan_info":
+		h.sendPlanInfo(cb.Message.Chat.ID, cb.From.ID)
+	case data == "referral_info":
+		h.sendReferralInfo(cb.Message.Chat.ID, cb.From.ID)
 	case data == "digest_now":
 		h.handleDigestNow(ctx, cb.Message.Chat.ID, cb.From.ID)
 	case data == "digest_all":
@@ -809,60 +830,197 @@ func (h *Handler) mainKeyboard() *tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("🗓 Расписание", "set_time"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🎯 Мой тариф", "plan_info"),
+			tgbotapi.NewInlineKeyboardButtonData("🎁 Рефералы", "referral_info"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("ℹ️ Помощь", "help_menu"),
 		),
 	)
 	return &buttons
 }
 
-func (h *Handler) buildStartMessage(user domain.User) string {
-	plan := user.Plan()
-	limitLine := "   Вам доступно неограниченное количество каналов."
+func (h *Handler) mainPlanLines(plan domain.UserPlan) (string, string) {
+	channel := "Каналы: без ограничений."
 	if plan.ChannelLimit > 0 {
-		limitLine = fmt.Sprintf("   Вам доступно до %d каналов.", plan.ChannelLimit)
+		channel = fmt.Sprintf("Каналы: до %d сохранённых.", plan.ChannelLimit)
 	}
-	requestLine := "   Ручные дайджесты не ограничены."
+	manual := "Ручные дайджесты: без ограничений."
 	switch {
 	case plan.ManualDailyLimit <= 0:
-		requestLine = "   Ручные дайджесты не ограничены."
+		manual = "Ручные дайджесты: без ограничений."
 	case plan.ManualIntroTotal > 0:
-		requestLine = fmt.Sprintf("   Первые %d запросов мгновенно, далее до %d в сутки.", plan.ManualIntroTotal, plan.ManualDailyLimit)
+		manual = fmt.Sprintf("Ручные дайджесты: %d мгновенно, затем до %d в день.", plan.ManualIntroTotal, plan.ManualDailyLimit)
 	default:
-		requestLine = fmt.Sprintf("   Лимит ручных дайджестов — %d в сутки.", plan.ManualDailyLimit)
+		manual = fmt.Sprintf("Ручные дайджесты: до %d в день.", plan.ManualDailyLimit)
 	}
-	lines := []string{
+	return channel, manual
+}
+
+func (h *Handler) buildStartSections(user domain.User) []string {
+	plan := user.Plan()
+	channelLine, manualLine := h.mainPlanLines(plan)
+
+	intro := []string{
 		"👋 Добро пожаловать в TG Digest Bot!",
 		"",
-		fmt.Sprintf("Ваш тариф: %s.", plan.Name),
+		fmt.Sprintf("Ваш текущий тариф: %s.", plan.Name),
 		"",
-		"Как пользоваться ботом:",
-		"1. ➕ Добавьте канал — кнопка \"Добавить канал\" или команда /add @alias.",
-		limitLine,
-		"2. 🏷 Назначьте теги: /tag @alias новости, аналитика.",
-		"3. 📰 Соберите дайджест за последние 24 часа — кнопка \"Дайджест\" или команда /digest_now.",
-		"   Чтобы получить дайджест по темам, используйте /digest_tag новости.",
-		requestLine,
-		"4. 🗓 Настройте автоматическую рассылку — кнопка \"Расписание\" или команда /schedule 21:30.",
+		"Основные лимиты:",
+		fmt.Sprintf("• %s", channelLine),
+		fmt.Sprintf("• %s", manualLine),
 		"",
-		"Под кнопкой \"ℹ️ Помощь\" вы найдёте полный список команд и примеров.",
+		"Используйте кнопки под сообщением, чтобы сразу перейти к нужному действию.",
 	}
+
+	quickStart := []string{
+		"🚀 Быстрый старт:",
+		"• ➕ Добавьте канал через кнопку «Добавить канал» или команду /add @alias.",
+		"• 🏷 Назначьте теги командой /tag @alias тема1, тема2, чтобы группировать каналы.",
+		"• 📰 Получите дайджест за 24 часа кнопкой «Дайджест» или командой /digest_now.",
+		"• 📌 Попробуйте тематический дайджест через «Дайджест по тегам» или /digest_tag новости.",
+		"• 🗓 Настройте автоматическую рассылку кнопкой «Расписание» или /schedule 21:30.",
+	}
+
+	var sections []string
+	sections = append(sections, strings.Join(intro, "\n"), strings.Join(quickStart, "\n"))
+
+	if referral := h.buildReferralPreview(user); referral != "" {
+		sections = append(sections, referral)
+	}
+
+	return sections
+}
+
+func (h *Handler) buildReferralPreview(user domain.User) string {
 	code := strings.TrimSpace(user.ReferralCode)
-	if code != "" {
-		link := ""
-		if username := strings.TrimSpace(h.bot.Self.UserName); username != "" {
-			link = fmt.Sprintf("https://t.me/%s?start=%s", username, code)
-		}
+	if code == "" {
+		return ""
+	}
+	link := h.referralLink(user)
+	lines := []string{
+		"🎁 Реферальная программа:",
+		"• Пригласите 3 друзей — тариф Plus, 5 — Pro.",
+		fmt.Sprintf("• Уже приглашено: %d.", user.ReferralsCount),
+	}
+	if link != "" {
+		lines = append(lines, fmt.Sprintf("• Ваша ссылка: %s", link))
+	}
+	lines = append(lines, "• Откройте раздел «🎁 Рефералы», чтобы узнать подробности.")
+	return strings.Join(lines, "\n")
+}
+
+func (h *Handler) referralLink(user domain.User) string {
+	code := strings.TrimSpace(user.ReferralCode)
+	if code == "" {
+		return ""
+	}
+	username := strings.TrimSpace(h.bot.Self.UserName)
+	if username == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://t.me/%s?start=%s", username, url.QueryEscape(code))
+}
+
+func (h *Handler) buildPlanInfoMessage(user domain.User) string {
+	plan := user.Plan()
+	channelLine, manualLine := h.mainPlanLines(plan)
+	lines := []string{
+		fmt.Sprintf("🎯 Ваш тариф: %s", plan.Name),
+		"",
+		"Текущие лимиты:",
+		fmt.Sprintf("• %s", channelLine),
+		fmt.Sprintf("• %s", manualLine),
+	}
+	if plan.ManualIntroTotal > 0 {
 		lines = append(lines,
 			"",
-			"🎁 Реферальная программа:",
-			fmt.Sprintf("• Пригласите 3 друзей — тариф Plus, 5 — Pro. Сейчас приглашено: %d.", user.ReferralsCount),
+			"Первые мгновенные запросы расходуются автоматически при использовании /digest_now.",
 		)
-		if link != "" {
-			lines = append(lines, fmt.Sprintf("• Ваша ссылка: %s", link))
-		}
-		lines = append(lines, "• Делитесь ссылкой, чтобы получать больше дайджестов.")
 	}
+	lines = append(lines,
+		"",
+		"Нажмите «🎁 Рефералы», чтобы увеличить лимиты приглашениями.",
+	)
 	return strings.Join(lines, "\n")
+}
+
+func (h *Handler) buildReferralInfoMessage(user domain.User) string {
+	plusTarget, proTarget := domain.ReferralProgressTargets()
+	link := h.referralLink(user)
+	lines := []string{
+		"🎁 Реферальная программа",
+		"",
+		fmt.Sprintf("Приглашено друзей: %d.", user.ReferralsCount),
+		fmt.Sprintf("• %d приглашений — тариф Plus.", plusTarget),
+		fmt.Sprintf("• %d приглашений — тариф Pro.", proTarget),
+	}
+	switch {
+	case user.ReferralsCount < plusTarget:
+		remaining := plusTarget - user.ReferralsCount
+		lines = append(lines, "", fmt.Sprintf("До тарифа Plus осталось пригласить %d.", remaining))
+	case user.ReferralsCount < proTarget:
+		remaining := proTarget - user.ReferralsCount
+		lines = append(lines, "", fmt.Sprintf("До тарифа Pro осталось пригласить %d.", remaining))
+	default:
+		lines = append(lines, "", "Вы уже достигли максимального тарифа по рефералам. Спасибо, что делитесь ботом!")
+	}
+	if link != "" {
+		lines = append(lines, "", fmt.Sprintf("Поделитесь ссылкой: %s", link))
+	}
+	lines = append(lines,
+		"",
+		"Ссылка учитывает только новых пользователей и не засчитывается при переходе самим собой.",
+	)
+	return strings.Join(lines, "\n")
+}
+
+func (h *Handler) referralKeyboard(user domain.User) *tgbotapi.InlineKeyboardMarkup {
+	link := h.referralLink(user)
+	if link == "" {
+		return nil
+	}
+	markup := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("🔗 Открыть ссылку", link),
+		),
+	)
+	return &markup
+}
+
+func (h *Handler) sendPlanInfo(chatID, tgUserID int64) {
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	h.reply(chatID, h.buildPlanInfoMessage(user), nil)
+}
+
+func (h *Handler) sendReferralInfo(chatID, tgUserID int64) {
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	h.reply(chatID, h.buildReferralInfoMessage(user), h.referralKeyboard(user))
+}
+
+func (h *Handler) notifyPlanUpgrade(user domain.User, previousRole domain.UserRole) {
+	plan := user.Plan()
+	prevPlan := domain.PlanForRole(previousRole)
+	channelLine, manualLine := h.mainPlanLines(plan)
+	lines := []string{
+		"🎉 Ваш тариф обновлён!",
+		fmt.Sprintf("Вы перешли с %s на %s благодаря %d приглашённым друзьям.", prevPlan.Name, plan.Name, user.ReferralsCount),
+		"",
+		"Новые лимиты:",
+		fmt.Sprintf("• %s", channelLine),
+		fmt.Sprintf("• %s", manualLine),
+		"",
+		"Спасибо, что делитесь ботом!",
+	}
+	h.reply(user.TGUserID, strings.Join(lines, "\n"), nil)
 }
 
 func (h *Handler) buildHelpMessage() string {

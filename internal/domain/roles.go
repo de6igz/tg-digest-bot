@@ -54,6 +54,11 @@ const (
 	referralsForPro  = 5
 )
 
+// ReferralProgressTargets возвращает количество приглашений для апгрейда до Plus и Pro.
+func ReferralProgressTargets() (int, int) {
+	return referralsForPlus, referralsForPro
+}
+
 // PlanForRole возвращает тариф для роли.
 func PlanForRole(role UserRole) UserPlan {
 	if plan, ok := plans[UserRole(strings.ToLower(string(role)))]; ok {

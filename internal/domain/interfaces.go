@@ -46,7 +46,7 @@ type UserRepo interface {
 	UpdateDailyTime(userID int64, daily time.Time) error
 	DeleteUserData(userID int64) error
 	ReserveManualRequest(userID int64, now time.Time) (ManualRequestState, error)
-	ApplyReferral(code string, newUserID int64) (User, bool, error)
+	ApplyReferral(code string, newUserID int64) (ReferralResult, error)
 }
 
 // ChannelRepo управляет каналами.
