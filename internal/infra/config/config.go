@@ -16,8 +16,6 @@ type AppConfig struct {
 	Telegram struct {
 		Token      string `envconfig:"TG_BOT_TOKEN"`
 		WebhookURL string `envconfig:"TG_WEBHOOK_URL"`
-		APIID      int    `envconfig:"TG_API_ID"`
-		APIHash    string `envconfig:"TG_API_HASH"`
 	} `envconfig:""`
 
 	MTProto struct {

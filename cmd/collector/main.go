@@ -64,10 +64,27 @@ func main() {
 	}
 
 	if cfg.MTProto.SessionName == "" {
-		logger.Fatal().Msg("collector: не указано имя MTProto-сессии (MTPROTO_SESSION_NAME)")
+		logger.Fatal().Msg("collector: не указан пул MTProto-аккаунтов (MTPROTO_SESSION_NAME)")
 	}
-	collectorSession := mtproto.NewSessionDB(repoAdapter, cfg.MTProto.SessionName)
-	collector, err := mtproto.NewCollector(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger)
+	accountCtx, accountCancel := context.WithTimeout(ctx, 10*time.Second)
+	accountsMeta, err := repoAdapter.ListMTProtoAccounts(accountCtx, cfg.MTProto.SessionName)
+	accountCancel()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("collector: не удалось загрузить MTProto-аккаунты")
+	}
+	if len(accountsMeta) == 0 {
+		logger.Fatal().Msg("collector: пул MTProto-аккаунтов пуст")
+	}
+	collectorAccounts := make([]mtproto.Account, 0, len(accountsMeta))
+	for _, meta := range accountsMeta {
+		collectorAccounts = append(collectorAccounts, mtproto.Account{
+			Name:    meta.Name,
+			APIID:   meta.APIID,
+			APIHash: meta.APIHash,
+			Storage: mtproto.NewSessionDB(repoAdapter, meta.Name),
+		})
+	}
+	collector, err := mtproto.NewCollector(collectorAccounts, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("collector: не удалось создать MTProto клиента")
 	}

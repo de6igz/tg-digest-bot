@@ -541,3 +541,102 @@ ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
 	metrics.ObserveNetworkRequest("postgres", "mtproto_sessions_store", "mtproto_sessions", start, err)
 	return err
 }
+
+// ListMTProtoAccounts возвращает список MTProto-аккаунтов в указанном пуле.
+func (p *Postgres) ListMTProtoAccounts(ctx context.Context, pool string) ([]domain.MTProtoAccount, error) {
+	ctx, cancel := p.connCtxWithParent(ctx)
+	defer cancel()
+
+	if pool == "" {
+		pool = "default"
+	}
+
+	start := time.Now()
+	rows, err := p.pool.Query(ctx, `
+SELECT name, pool, api_id, api_hash, phone, username, raw_json
+FROM mtproto_accounts
+WHERE pool = $1
+ORDER BY name
+`, pool)
+	metrics.ObserveNetworkRequest("postgres", "mtproto_accounts_list", "mtproto_accounts", start, err)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []domain.MTProtoAccount
+	for rows.Next() {
+		var (
+			account  domain.MTProtoAccount
+			phone    sql.NullString
+			username sql.NullString
+			rawJSON  []byte
+		)
+		if scanErr := rows.Scan(&account.Name, &account.Pool, &account.APIID, &account.APIHash, &phone, &username, &rawJSON); scanErr != nil {
+			return nil, scanErr
+		}
+		if phone.Valid {
+			account.Phone = phone.String
+		}
+		if username.Valid {
+			account.Username = username.String
+		}
+		if len(rawJSON) > 0 {
+			account.RawJSON = make([]byte, len(rawJSON))
+			copy(account.RawJSON, rawJSON)
+		}
+		accounts = append(accounts, account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return accounts, nil
+}
+
+// UpsertMTProtoAccount сохраняет или обновляет MTProto-аккаунт.
+func (p *Postgres) UpsertMTProtoAccount(ctx context.Context, account domain.MTProtoAccount) error {
+	ctx, cancel := p.connCtxWithParent(ctx)
+	defer cancel()
+
+	if account.Pool == "" {
+		account.Pool = "default"
+	}
+	if account.Name == "" {
+		return fmt.Errorf("account name is required")
+	}
+	if account.APIID == 0 {
+		return fmt.Errorf("account api_id is required")
+	}
+	if account.APIHash == "" {
+		return fmt.Errorf("account api_hash is required")
+	}
+
+	phone := sql.NullString{}
+	if account.Phone != "" {
+		phone = sql.NullString{String: account.Phone, Valid: true}
+	}
+	username := sql.NullString{}
+	if account.Username != "" {
+		username = sql.NullString{String: account.Username, Valid: true}
+	}
+
+	var rawJSON interface{}
+	if len(account.RawJSON) > 0 {
+		rawJSON = account.RawJSON
+	}
+
+	start := time.Now()
+	_, err := p.pool.Exec(ctx, `
+INSERT INTO mtproto_accounts (pool, name, api_id, api_hash, phone, username, raw_json, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+ON CONFLICT (pool, name) DO UPDATE
+SET api_id = EXCLUDED.api_id,
+    api_hash = EXCLUDED.api_hash,
+    phone = EXCLUDED.phone,
+    username = EXCLUDED.username,
+    raw_json = EXCLUDED.raw_json,
+    updated_at = now()
+`, account.Pool, account.Name, account.APIID, account.APIHash, phone, username, rawJSON)
+	metrics.ObserveNetworkRequest("postgres", "mtproto_accounts_upsert", "mtproto_accounts", start, err)
+	return err
+}

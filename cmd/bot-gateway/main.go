@@ -49,10 +49,31 @@ func main() {
 		logger.Fatal().Err(err).Msg("не удалось инициализировать очередь RabbitMQ")
 	}
 	if cfg.MTProto.SessionName == "" {
-		logger.Fatal().Msg("не указано имя MTProto-сессии (MTPROTO_SESSION_NAME)")
+		logger.Fatal().Msg("не указан пул MTProto-аккаунтов (MTPROTO_SESSION_NAME)")
 	}
-	collectorSession := mtproto.NewSessionDB(repoAdapter, cfg.MTProto.SessionName)
-	channelService := channels.NewService(repoAdapter, mtproto.NewResolver(cfg.Telegram.APIID, cfg.Telegram.APIHash, collectorSession, logger), repoAdapter, cfg.Limits.FreeChannels)
+	accountCtx, accountCancel := context.WithTimeout(ctx, 10*time.Second)
+	accountsMeta, err := repoAdapter.ListMTProtoAccounts(accountCtx, cfg.MTProto.SessionName)
+	accountCancel()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("не удалось загрузить MTProto-аккаунты")
+	}
+	if len(accountsMeta) == 0 {
+		logger.Fatal().Msg("пул MTProto-аккаунтов пуст")
+	}
+	resolverAccounts := make([]mtproto.Account, 0, len(accountsMeta))
+	for _, meta := range accountsMeta {
+		resolverAccounts = append(resolverAccounts, mtproto.Account{
+			Name:    meta.Name,
+			APIID:   meta.APIID,
+			APIHash: meta.APIHash,
+			Storage: mtproto.NewSessionDB(repoAdapter, meta.Name),
+		})
+	}
+	resolver, err := mtproto.NewResolver(resolverAccounts, logger)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("не удалось создать MTProto резолвер")
+	}
+	channelService := channels.NewService(repoAdapter, resolver, repoAdapter, cfg.Limits.FreeChannels)
 	scheduleService := schedule.NewService(repoAdapter)
 
 	botAPI, err := tgbotapi.NewBotAPI(cfg.Telegram.Token)

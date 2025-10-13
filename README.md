@@ -5,17 +5,19 @@
 ## Быстрый старт
 
 1. Скопируйте `.env.example` в `.env` и заполните значения токенов Telegram и доступа к БД.
-2. Подготовьте MTProto-сессию (например, выполните `go run github.com/gotd/td/cmd/telegram-auth` и авторизуйтесь под сервисным
-   аккаунтом). Полученный JSON можно сохранить в таблицу `mtproto_sessions` вручную или с помощью утилиты импорта. Импортёр
-   поддерживает файлы `tg.session`, оригинальные SQLite-файлы Telethon (`*.session`), а также JSON-описания аккаунтов, которые
-   продают вместе с файлом SQLite — из них будет взята строковая сессия Telethon (`extra_params`) и автоматически преобразована к
-   формату gotd:
+2. Подготовьте MTProto-аккаунты. Импортёр `cmd/mtproto-session-importer` сохраняет API ID/Hash и данные сессии в БД, поддерживая
+   Telethon SQLite-файлы (`*.session`), JSON-описания аккаунтов и строковые сессии. Для комплекта из `*.json` и `*.session`
+   достаточно выполнить:
 
    ```bash
-   go run ./cmd/mtproto-session-importer -file /путь/к/tg.session -name default
+   go run ./cmd/mtproto-session-importer \
+     -meta /путь/к/аккаунту.json \
+     -file /путь/к/аккаунту.session \
+     -pool default
    ```
 
-   Имя сессии должно совпадать со значением `MTPROTO_SESSION_NAME` (по умолчанию `default`).
+   Импортёр возьмёт `app_id` и `app_hash` из JSON, преобразует сессию к формату gotd и сохранит аккаунт в пул `default`. В рантайме
+   сервисы используют пул, указанный в переменной `MTPROTO_SESSION_NAME`, перебирая аккаунты при ошибках MTProto.
 3. Запустите инфраструктуру и сервисы:
 
 ```bash
