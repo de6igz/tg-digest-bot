@@ -28,8 +28,7 @@ type AppConfig struct {
 	RabbitURL string `envconfig:"RABBITMQ_URL"`
 
 	Limits struct {
-		FreeChannels int `envconfig:"FREE_CHANNELS_LIMIT" default:"5"`
-		DigestMax    int `envconfig:"DIGEST_MAX_ITEMS" default:"10"`
+		DigestMax int `envconfig:"DIGEST_MAX_ITEMS" default:"10"`
 	} `envconfig:""`
 
 	Queues struct {

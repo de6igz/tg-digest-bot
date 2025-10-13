@@ -45,6 +45,7 @@ type UserRepo interface {
 	ListForDailyTime(now time.Time) ([]User, error)
 	UpdateDailyTime(userID int64, daily time.Time) error
 	DeleteUserData(userID int64) error
+	ReserveManualRequest(userID int64, now time.Time) (ManualRequestState, error)
 }
 
 // ChannelRepo управляет каналами.

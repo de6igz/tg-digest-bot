@@ -23,12 +23,11 @@ type Service struct {
 	repo     domain.ChannelRepo
 	resolver domain.ChannelResolver
 	userRepo domain.UserRepo
-	limit    int
 }
 
 // NewService создаёт новый сервис каналов.
-func NewService(repo domain.ChannelRepo, resolver domain.ChannelResolver, userRepo domain.UserRepo, limit int) *Service {
-	return &Service{repo: repo, resolver: resolver, userRepo: userRepo, limit: limit}
+func NewService(repo domain.ChannelRepo, resolver domain.ChannelResolver, userRepo domain.UserRepo) *Service {
+	return &Service{repo: repo, resolver: resolver, userRepo: userRepo}
 }
 
 // ParseAlias приводит ввод пользователя к каноничному алиасу.
@@ -55,7 +54,8 @@ func (s *Service) AddChannel(ctx context.Context, tgUserID int64, alias string) 
 	if err != nil {
 		return domain.Channel{}, fmt.Errorf("подсчёт каналов: %w", err)
 	}
-	if s.limit > 0 && count >= s.limit {
+	plan := user.Plan()
+	if plan.ChannelLimit > 0 && count >= plan.ChannelLimit {
 		return domain.Channel{}, ErrChannelLimit
 	}
 	meta, err := s.resolver.ResolvePublic(parsed)

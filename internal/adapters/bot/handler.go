@@ -29,7 +29,6 @@ type Handler struct {
 	scheduleUC  *schedule.Service
 	users       domain.UserRepo
 	jobs        domain.DigestQueue
-	freeLimit   int
 	maxDigest   int
 	mu          sync.Mutex
 	pendingDrop map[int64]time.Time
@@ -37,7 +36,7 @@ type Handler struct {
 }
 
 // NewHandler создаёт обработчик.
-func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, jobs domain.DigestQueue, freeLimit, maxDigest int) *Handler {
+func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, jobs domain.DigestQueue, maxDigest int) *Handler {
 	return &Handler{
 		bot:         bot,
 		log:         log,
@@ -45,7 +44,6 @@ func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Se
 		scheduleUC:  scheduleUC,
 		users:       userRepo,
 		jobs:        jobs,
-		freeLimit:   freeLimit,
 		maxDigest:   maxDigest,
 		pendingDrop: make(map[int64]time.Time),
 		pendingTime: make(map[int64]struct{}),
@@ -120,11 +118,12 @@ func (h *Handler) handleStart(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 	locale := msg.From.LanguageCode
-	if _, err := h.users.UpsertByTGID(msg.From.ID, locale, ""); err != nil {
+	user, err := h.users.UpsertByTGID(msg.From.ID, locale, "")
+	if err != nil {
 		h.reply(msg.Chat.ID, fmt.Sprintf("Ошибка сохранения профиля: %v", err), nil)
 		return
 	}
-	h.reply(msg.Chat.ID, h.buildStartMessage(), h.mainKeyboard())
+	h.reply(msg.Chat.ID, h.buildStartMessage(user.Plan()), h.mainKeyboard())
 }
 
 func (h *Handler) handleHelp(chatID int64) {
@@ -142,7 +141,17 @@ func (h *Handler) handleAdd(ctx context.Context, chatID int64, tgUserID int64, a
 		case errors.Is(err, channels.ErrAliasInvalid):
 			h.reply(chatID, "Некорректный алиас. Пример: /add @example", nil)
 		case errors.Is(err, channels.ErrChannelLimit):
-			h.reply(chatID, fmt.Sprintf("Превышен лимит %d каналов. Удалите канал перед добавлением нового.", h.freeLimit), nil)
+			user, getErr := h.users.GetByTGID(tgUserID)
+			if getErr != nil {
+				h.reply(chatID, "Превышен лимит каналов для вашего тарифа.", nil)
+				return
+			}
+			plan := user.Plan()
+			if plan.ChannelLimit > 0 {
+				h.reply(chatID, fmt.Sprintf("Тариф %s позволяет добавить до %d каналов. Удалите канал или обновите тариф.", plan.Name, plan.ChannelLimit), nil)
+			} else {
+				h.reply(chatID, "Для вашего тарифа нет ограничений по каналам, но произошла ошибка. Попробуйте позже.", nil)
+			}
 		case errors.Is(err, channels.ErrPrivateChannel):
 			h.reply(chatID, "Канал приватный или недоступен. Добавьте публичный канал.", nil)
 		default:
@@ -539,16 +548,36 @@ func (h *Handler) handleDeleteChannel(ctx context.Context, chatID, tgUserID, cha
 	h.reply(chatID, "Канал удалён", nil)
 }
 
-func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID int64) {
-	job := domain.DigestJob{
-		UserTGID:    tgUserID,
-		ChatID:      chatID,
-		ChannelID:   channelID,
-		Date:        time.Now().UTC(),
-		RequestedAt: time.Now().UTC(),
-		Cause:       domain.DigestCauseManual,
+func (h *Handler) reserveManualRequest(chatID int64, user domain.User) (domain.ManualRequestState, bool) {
+	state, err := h.users.ReserveManualRequest(user.ID, time.Now().UTC())
+	if err != nil {
+		h.log.Error().Err(err).Int64("user", user.TGUserID).Msg("не удалось зарезервировать ручной запрос")
+		h.reply(chatID, "Не удалось обработать запрос. Попробуйте позже.", nil)
+		return domain.ManualRequestState{}, false
 	}
+	if !state.Allowed {
+		h.replyManualLimit(chatID, state)
+		return state, false
+	}
+	return state, true
+}
 
+func (h *Handler) replyManualLimit(chatID int64, state domain.ManualRequestState) {
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Вы достигли лимита запросов для тарифа %s.", state.Plan.Name))
+	switch {
+	case state.Plan.ManualDailyLimit <= 0:
+		lines = append(lines, "Лимитов для этого тарифа нет, попробуйте повторить запрос позже или обратитесь в поддержку.")
+	case state.Plan.Role == domain.UserRoleFree && state.Plan.ManualIntroTotal > 0:
+		lines = append(lines, fmt.Sprintf("После первых %d запросов доступен %d запрос в сутки.", state.Plan.ManualIntroTotal, state.Plan.ManualDailyLimit))
+		lines = append(lines, "Попробуйте завтра или обновите тариф.")
+	default:
+		lines = append(lines, fmt.Sprintf("Лимит — %d запросов в сутки. Попробуйте завтра или обновите тариф.", state.Plan.ManualDailyLimit))
+	}
+	h.reply(chatID, strings.Join(lines, "\n"), nil)
+}
+
+func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID int64) {
 	var channelName string
 	if channelID > 0 {
 		channels, err := h.channelUC.ListChannels(ctx, tgUserID, 100, 0)
@@ -570,6 +599,25 @@ func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID
 			h.reply(chatID, "Канал не найден среди ваших подписок", nil)
 			return
 		}
+	}
+
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	if _, ok := h.reserveManualRequest(chatID, user); !ok {
+		return
+	}
+
+	now := time.Now().UTC()
+	job := domain.DigestJob{
+		UserTGID:    tgUserID,
+		ChatID:      chatID,
+		ChannelID:   channelID,
+		Date:        now,
+		RequestedAt: now,
+		Cause:       domain.DigestCauseManual,
 	}
 
 	if err := h.jobs.Enqueue(ctx, job); err != nil {
@@ -598,12 +646,21 @@ func (h *Handler) enqueueDigestByTags(ctx context.Context, chatID, tgUserID int6
 		h.reply(chatID, "Укажите теги для дайджеста", nil)
 		return
 	}
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	if _, ok := h.reserveManualRequest(chatID, user); !ok {
+		return
+	}
+	now := time.Now().UTC()
 	job := domain.DigestJob{
 		UserTGID:    tgUserID,
 		ChatID:      chatID,
 		Tags:        cleaned,
-		Date:        time.Now().UTC(),
-		RequestedAt: time.Now().UTC(),
+		Date:        now,
+		RequestedAt: now,
 		Cause:       domain.DigestCauseManual,
 	}
 	if err := h.jobs.Enqueue(ctx, job); err != nil {
@@ -743,16 +800,32 @@ func (h *Handler) mainKeyboard() *tgbotapi.InlineKeyboardMarkup {
 	return &buttons
 }
 
-func (h *Handler) buildStartMessage() string {
+func (h *Handler) buildStartMessage(plan domain.UserPlan) string {
+	limitLine := "   Вам доступно неограниченное количество каналов."
+	if plan.ChannelLimit > 0 {
+		limitLine = fmt.Sprintf("   Вам доступно до %d каналов.", plan.ChannelLimit)
+	}
+	requestLine := "   Ручные дайджесты не ограничены."
+	switch {
+	case plan.ManualDailyLimit <= 0:
+		requestLine = "   Ручные дайджесты не ограничены."
+	case plan.ManualIntroTotal > 0:
+		requestLine = fmt.Sprintf("   Первые %d запросов мгновенно, далее до %d в сутки.", plan.ManualIntroTotal, plan.ManualDailyLimit)
+	default:
+		requestLine = fmt.Sprintf("   Лимит ручных дайджестов — %d в сутки.", plan.ManualDailyLimit)
+	}
 	lines := []string{
 		"👋 Добро пожаловать в TG Digest Bot!",
 		"",
+		fmt.Sprintf("Ваш тариф: %s.", plan.Name),
+		"",
 		"Как пользоваться ботом:",
 		"1. ➕ Добавьте канал — кнопка \"Добавить канал\" или команда /add @alias.",
-		fmt.Sprintf("   Вам доступно до %d каналов.", h.freeLimit),
+		limitLine,
 		"2. 🏷 Назначьте теги: /tag @alias новости, аналитика.",
 		"3. 📰 Соберите дайджест за последние 24 часа — кнопка \"Дайджест\" или команда /digest_now.",
 		"   Чтобы получить дайджест по темам, используйте /digest_tag новости.",
+		requestLine,
 		"4. 🗓 Настройте автоматическую рассылку — кнопка \"Расписание\" или команда /schedule 21:30.",
 		"",
 		"Под кнопкой \"ℹ️ Помощь\" вы найдёте полный список команд и примеров.",

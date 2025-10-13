@@ -73,7 +73,7 @@ func main() {
 	if err != nil {
 		logger.Fatal().Err(err).Msg("не удалось создать MTProto резолвер")
 	}
-	channelService := channels.NewService(repoAdapter, resolver, repoAdapter, cfg.Limits.FreeChannels)
+        channelService := channels.NewService(repoAdapter, resolver, repoAdapter)
 	scheduleService := schedule.NewService(repoAdapter)
 
 	botAPI, err := tgbotapi.NewBotAPI(cfg.Telegram.Token)
@@ -81,7 +81,7 @@ func main() {
 		logger.Fatal().Err(err).Msg("не удалось создать бота")
 	}
 
-	h := bot.NewHandler(botAPI, logger, channelService, scheduleService, repoAdapter, digestQueue, cfg.Limits.FreeChannels, cfg.Limits.DigestMax)
+        h := bot.NewHandler(botAPI, logger, channelService, scheduleService, repoAdapter, digestQueue, cfg.Limits.DigestMax)
 
 	r := chi.NewRouter()
 	r.Post("/bot/webhook", func(w http.ResponseWriter, r *http.Request) {
