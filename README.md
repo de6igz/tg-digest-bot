@@ -5,19 +5,25 @@
 ## Быстрый старт
 
 1. Скопируйте `.env.example` в `.env` и заполните значения токенов Telegram и доступа к БД.
-2. Подготовьте MTProto-аккаунты. Импортёр `cmd/mtproto-session-importer` сохраняет API ID/Hash и данные сессии в БД, поддерживая
-   Telethon SQLite-файлы (`*.session`), JSON-описания аккаунтов и строковые сессии. Для комплекта из `*.json` и `*.session`
-   достаточно выполнить:
+2. Подготовьте MTProto-аккаунты. Сначала соберите bundle-файл с помощью скрипта `scripts/export_telethon_session.py` (требуется
+   установленный `telethon`):
 
    ```bash
-   go run ./cmd/mtproto-session-importer \
-     -meta /путь/к/аккаунту.json \
-     -file /путь/к/аккаунту.session \
-     -pool default
+   pip install telethon
+   python3 scripts/export_telethon_session.py \
+     --metadata /путь/к/аккаунту.json \
+     --session /путь/к/аккаунту.session \
+     --output /путь/к/bundle.json
    ```
 
-   Импортёр возьмёт `app_id` и `app_hash` из JSON, преобразует сессию к формату gotd и сохранит аккаунт в пул `default`. В рантайме
-   сервисы используют пул, указанный в переменной `MTPROTO_SESSION_NAME`, перебирая аккаунты при ошибках MTProto.
+   Затем импортируйте bundle в БД:
+
+   ```bash
+   go run ./cmd/mtproto-session-importer -bundle /путь/к/bundle.json -pool default
+   ```
+
+   Импортёр берёт API ID/Hash и Telethon string session из bundle, конвертирует сессию в формат gotd и сохраняет аккаунт в выбранный
+   пул. В рантайме сервисы используют пул, указанный в переменной `MTPROTO_SESSION_NAME`, перебирая аккаунты при ошибках MTProto.
 3. Запустите инфраструктуру и сервисы:
 
 ```bash
@@ -69,4 +75,5 @@ make test
 
 - `scripts/dev.sh` — запуск docker-compose стека.
 - `scripts/migrate.sh` — применение миграций через golang-migrate.
+- `scripts/export_telethon_session.py` — подготовка JSON bundle с данными MTProto-аккаунта из Telethon файлов.
 

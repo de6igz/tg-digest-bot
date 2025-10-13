@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -20,104 +20,109 @@ import (
 	"tg-digest-bot/internal/infra/db"
 )
 
-type telethonAccount struct {
-	AppID       int    `json:"app_id"`
-	AppHash     string `json:"app_hash"`
-	Phone       string `json:"phone"`
-	Username    string `json:"username"`
-	SessionFile string `json:"session_file"`
-	ExtraParams string `json:"extra_params"`
+type sessionBundle struct {
+	Name          string          `json:"name"`
+	Pool          string          `json:"pool"`
+	APIID         int             `json:"api_id"`
+	APIHash       string          `json:"api_hash"`
+	Phone         string          `json:"phone"`
+	Username      string          `json:"username"`
+	StringSession string          `json:"string_session"`
+	Session       string          `json:"session"`
+	SessionJSON   json.RawMessage `json:"session_json"`
+	Metadata      json.RawMessage `json:"metadata"`
+	RawJSON       json.RawMessage `json:"raw_json"`
+}
+
+func (b sessionBundle) metadata() []byte {
+	if trimmed := bytes.TrimSpace(b.Metadata); len(trimmed) > 0 {
+		return append([]byte(nil), trimmed...)
+	}
+	if trimmed := bytes.TrimSpace(b.RawJSON); len(trimmed) > 0 {
+		return append([]byte(nil), trimmed...)
+	}
+	return nil
+}
+
+func (b sessionBundle) sessionPayload() ([]byte, bool, error) {
+	if trimmed := bytes.TrimSpace(b.SessionJSON); len(trimmed) > 0 {
+		return append([]byte(nil), trimmed...), false, nil
+	}
+
+	sessionString := strings.TrimSpace(b.StringSession)
+	if sessionString == "" {
+		sessionString = strings.TrimSpace(b.Session)
+	}
+	if sessionString == "" {
+		return nil, false, fmt.Errorf("session bundle is missing string_session or session_json")
+	}
+
+	converted, wasConverted, err := mtproto.NormalizeSessionBytes([]byte(sessionString))
+	if err != nil {
+		return nil, false, err
+	}
+	return converted, wasConverted, nil
 }
 
 func main() {
 	var (
-		filePath    string
-		metaPath    string
-		sessionName string
-		poolName    string
-		apiID       int
-		apiHash     string
+		bundlePath   string
+		nameOverride string
+		poolOverride string
 	)
-	flag.StringVar(&filePath, "file", "", "Path to MTProto session file (.session, JSON or string)")
-	flag.StringVar(&metaPath, "meta", "", "Path to Telethon account JSON file (optional)")
-	flag.StringVar(&sessionName, "name", "", "Name of the MTProto account (defaults to phone/session file name)")
-	flag.StringVar(&poolName, "pool", "default", "Pool name for grouping MTProto accounts")
-	flag.IntVar(&apiID, "api-id", 0, "MTProto api_id (optional, overrides metadata)")
-	flag.StringVar(&apiHash, "api-hash", "", "MTProto api_hash (optional, overrides metadata)")
+
+	flag.StringVar(&bundlePath, "bundle", "", "Path to MTProto session bundle JSON (exported by scripts/export_telethon_session.py)")
+	flag.StringVar(&bundlePath, "file", "", "Deprecated alias for -bundle")
+	flag.StringVar(&nameOverride, "name", "", "Override account name from bundle")
+	flag.StringVar(&poolOverride, "pool", "", "Override pool name from bundle")
 	flag.Parse()
 
-	var (
-		rawMeta  []byte
-		meta     telethonAccount
-		haveMeta bool
-	)
-
-	if metaPath != "" {
-		var err error
-		rawMeta, err = os.ReadFile(metaPath)
-		if err != nil {
-			log.Fatal().Err(err).Msg("mtproto-importer: failed to read metadata file")
-		}
-		if err := json.Unmarshal(rawMeta, &meta); err != nil {
-			log.Fatal().Err(err).Msg("mtproto-importer: failed to parse metadata JSON")
-		}
-		haveMeta = true
-		if meta.AppID != 0 {
-			apiID = meta.AppID
-		}
-		if meta.AppHash != "" {
-			apiHash = meta.AppHash
-		}
-		if sessionName == "" {
-			if meta.SessionFile != "" {
-				sessionName = meta.SessionFile
-			} else if meta.Phone != "" {
-				sessionName = meta.Phone
-			}
-		}
+	bundlePath = strings.TrimSpace(bundlePath)
+	if bundlePath == "" {
+		log.Fatal().Msg("mtproto-importer: -bundle path is required")
 	}
 
-	sessionName = strings.TrimSpace(sessionName)
-	poolName = strings.TrimSpace(poolName)
-	if poolName == "" {
-		poolName = "default"
-	}
-	if sessionName == "" && filePath != "" {
-		base := filepath.Base(filePath)
-		sessionName = strings.TrimSuffix(base, filepath.Ext(base))
-	}
-	if sessionName == "" {
-		log.Fatal().Msg("mtproto-importer: account name is required (-name or metadata file)")
-	}
-	if apiID == 0 {
-		log.Fatal().Msg("mtproto-importer: api_id is required (metadata file or -api-id)")
-	}
-	if apiHash == "" {
-		log.Fatal().Msg("mtproto-importer: api_hash is required (metadata file or -api-hash)")
+	rawBundle, err := os.ReadFile(bundlePath)
+	if err != nil {
+		log.Fatal().Err(err).Msg("mtproto-importer: failed to read bundle file")
 	}
 
-	var (
-		sessionData []byte
-		converted   bool
-		err         error
-	)
+	var bundle sessionBundle
+	if err := json.Unmarshal(rawBundle, &bundle); err != nil {
+		log.Fatal().Err(err).Msg("mtproto-importer: failed to parse bundle JSON")
+	}
 
-	if filePath != "" {
-		sessionData, err = os.ReadFile(filePath)
-		if err != nil {
-			log.Fatal().Err(err).Msg("mtproto-importer: failed to read session file")
-		}
-		sessionData, converted, err = mtproto.NormalizeSessionBytes(sessionData)
-		if err != nil {
-			log.Fatal().Err(err).Msg("mtproto-importer: unsupported MTProto session format")
-		}
-	} else if haveMeta && meta.ExtraParams != "" {
-		sessionData, converted, err = mtproto.NormalizeSessionBytes([]byte(meta.ExtraParams))
-		if err != nil {
-			log.Fatal().Err(err).Msg("mtproto-importer: failed to convert extra_params session string")
-		}
-	} else {
-		log.Fatal().Msg("mtproto-importer: provide either -file or metadata.extra_params")
+	if name := strings.TrimSpace(nameOverride); name != "" {
+		bundle.Name = name
+	}
+	if pool := strings.TrimSpace(poolOverride); pool != "" {
+		bundle.Pool = pool
+	}
+
+	if bundle.Name == "" {
+		bundle.Name = strings.TrimSuffix(filepath.Base(bundlePath), filepath.Ext(bundlePath))
+	}
+	bundle.Name = strings.TrimSpace(bundle.Name)
+	if bundle.Name == "" {
+		log.Fatal().Msg("mtproto-importer: account name is required")
+	}
+
+	bundle.Pool = strings.TrimSpace(bundle.Pool)
+	if bundle.Pool == "" {
+		bundle.Pool = "default"
+	}
+
+	if bundle.APIID == 0 {
+		log.Fatal().Msg("mtproto-importer: api_id is required in the bundle")
+	}
+	bundle.APIHash = strings.TrimSpace(bundle.APIHash)
+	if bundle.APIHash == "" {
+		log.Fatal().Msg("mtproto-importer: api_hash is required in the bundle")
+	}
+
+	sessionData, converted, err := bundle.sessionPayload()
+	if err != nil {
+		log.Fatal().Err(err).Msg("mtproto-importer: unsupported MTProto session format")
 	}
 
 	cfg := config.Load()
@@ -137,30 +142,25 @@ func main() {
 	defer cancel()
 
 	accountRecord := domain.MTProtoAccount{
-		Name:     sessionName,
-		Pool:     poolName,
-		APIID:    apiID,
-		APIHash:  apiHash,
-		Phone:    meta.Phone,
-		Username: meta.Username,
-		RawJSON:  rawMeta,
+		Name:     bundle.Name,
+		Pool:     bundle.Pool,
+		APIID:    bundle.APIID,
+		APIHash:  bundle.APIHash,
+		Phone:    strings.TrimSpace(bundle.Phone),
+		Username: strings.TrimSpace(bundle.Username),
+		RawJSON:  bundle.metadata(),
 	}
+
 	if err := repoAdapter.UpsertMTProtoAccount(ctx, accountRecord); err != nil {
 		log.Fatal().Err(err).Msg("mtproto-importer: failed to store account metadata")
 	}
 
-	if err := repoAdapter.StoreMTProtoSession(ctx, sessionName, sessionData); err != nil {
-		var pathErr *os.PathError
-		switch {
-		case errors.As(err, &pathErr):
-			log.Fatal().Err(pathErr).Msg("mtproto-importer: filesystem error while storing session")
-		default:
-			log.Fatal().Err(err).Msg("mtproto-importer: failed to store session in database")
-		}
+	if err := repoAdapter.StoreMTProtoSession(ctx, bundle.Name, sessionData); err != nil {
+		log.Fatal().Err(err).Msg("mtproto-importer: failed to store session in database")
 	}
 
 	if converted {
 		fmt.Println("Session payload was converted to gotd JSON format before storing")
 	}
-	fmt.Printf("Stored MTProto account %q in pool %q (%d bytes session)\n", sessionName, poolName, len(sessionData))
+	fmt.Printf("Stored MTProto account %q in pool %q (%d bytes session)\n", bundle.Name, bundle.Pool, len(sessionData))
 }
