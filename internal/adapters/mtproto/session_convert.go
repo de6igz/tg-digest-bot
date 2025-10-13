@@ -82,7 +82,9 @@ func convertTelethonSessionSQLite(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("telethon sqlite session truncated: expected at least %d bytes", pageSize)
 	}
 
-	schemaRecords, err := readTableRecords(raw, pageSize, 1)
+	reserved := int(raw[20])
+
+	schemaRecords, err := readTableRecords(raw, pageSize, reserved, 1)
 	if err != nil {
 		return nil, fmt.Errorf("read sqlite schema: %w", err)
 	}
@@ -106,7 +108,7 @@ func convertTelethonSessionSQLite(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("telethon sqlite session lacks sessions table")
 	}
 
-	sessionRecords, err := readTableRecords(raw, pageSize, rootPage)
+	sessionRecords, err := readTableRecords(raw, pageSize, reserved, rootPage)
 	if err != nil {
 		return nil, fmt.Errorf("read sessions table: %w", err)
 	}
@@ -151,13 +153,37 @@ func convertTelethonSessionSQLite(raw []byte) ([]byte, error) {
 
 type sqliteRecord []interface{}
 
-func readTableRecords(raw []byte, pageSize int, pageNumber int) ([]sqliteRecord, error) {
+func readTableRecords(raw []byte, pageSize, reserved int, pageNumber int) ([]sqliteRecord, error) {
 	if pageNumber <= 0 {
 		return nil, fmt.Errorf("invalid page number %d", pageNumber)
 	}
+	page, headerOffset, err := getPage(raw, pageSize, pageNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(page[headerOffset:]) < 8 {
+		return nil, fmt.Errorf("page %d too small", pageNumber)
+	}
+
+	pageType := page[headerOffset]
+	switch pageType {
+	case 0x0d:
+		return readTableLeaf(raw, pageSize, reserved, page, headerOffset)
+	case 0x05:
+		return readTableInterior(raw, pageSize, reserved, page, headerOffset)
+	case 0x0a, 0x02:
+		// Index b-tree pages do not contain table records we care about.
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unsupported b-tree page type 0x%02x", pageType)
+	}
+}
+
+func getPage(raw []byte, pageSize int, pageNumber int) ([]byte, int, error) {
 	start := (pageNumber - 1) * pageSize
 	if start >= len(raw) {
-		return nil, fmt.Errorf("page %d out of range", pageNumber)
+		return nil, 0, fmt.Errorf("page %d out of range", pageNumber)
 	}
 	end := start + pageSize
 	if end > len(raw) {
@@ -168,31 +194,15 @@ func readTableRecords(raw []byte, pageSize int, pageNumber int) ([]sqliteRecord,
 	headerOffset := 0
 	if pageNumber == 1 {
 		if len(page) < 100 {
-			return nil, fmt.Errorf("page %d shorter than database header", pageNumber)
+			return nil, 0, fmt.Errorf("page %d shorter than database header", pageNumber)
 		}
 		headerOffset = 100
 	}
 
-	if len(page[headerOffset:]) < 8 {
-		return nil, fmt.Errorf("page %d too small", pageNumber)
-	}
-
-	pageType := page[headerOffset]
-	switch pageType {
-	case 0x0d:
-		return readTableLeaf(page, headerOffset)
-	case 0x05:
-		return readTableInterior(raw, pageSize, page, headerOffset)
-	case 0x0a:
-		return readIndexLeaf(page, headerOffset)
-	case 0x02:
-		return readIndexInterior(raw, pageSize, page, headerOffset)
-	default:
-		return nil, fmt.Errorf("unsupported b-tree page type 0x%02x", pageType)
-	}
+	return page, headerOffset, nil
 }
 
-func readTableInterior(raw []byte, pageSize int, page []byte, offset int) ([]sqliteRecord, error) {
+func readTableInterior(raw []byte, pageSize, reserved int, page []byte, offset int) ([]sqliteRecord, error) {
 	if len(page[offset:]) < 12 {
 		return nil, fmt.Errorf("interior page truncated")
 	}
@@ -211,7 +221,7 @@ func readTableInterior(raw []byte, pageSize int, page []byte, offset int) ([]sql
 			return nil, fmt.Errorf("interior cell %d truncated", i)
 		}
 		childPage := int(binary.BigEndian.Uint32(page[cellOffset : cellOffset+4]))
-		childRows, err := readTableRecords(raw, pageSize, childPage)
+		childRows, err := readTableRecords(raw, pageSize, reserved, childPage)
 		if err != nil {
 			return nil, err
 		}
@@ -219,7 +229,7 @@ func readTableInterior(raw []byte, pageSize int, page []byte, offset int) ([]sql
 	}
 
 	if rightMost != 0 {
-		childRows, err := readTableRecords(raw, pageSize, rightMost)
+		childRows, err := readTableRecords(raw, pageSize, reserved, rightMost)
 		if err != nil {
 			return nil, err
 		}
@@ -229,7 +239,7 @@ func readTableInterior(raw []byte, pageSize int, page []byte, offset int) ([]sql
 	return rows, nil
 }
 
-func readTableLeaf(page []byte, offset int) ([]sqliteRecord, error) {
+func readTableLeaf(raw []byte, pageSize, reserved int, page []byte, offset int) ([]sqliteRecord, error) {
 	cellCount := int(binary.BigEndian.Uint16(page[offset+3 : offset+5]))
 	ptrBase := offset + 8
 	if ptrBase+cellCount*2 > len(page) {
@@ -239,7 +249,7 @@ func readTableLeaf(page []byte, offset int) ([]sqliteRecord, error) {
 	rows := make([]sqliteRecord, 0, cellCount)
 	for i := 0; i < cellCount; i++ {
 		cellOffset := int(binary.BigEndian.Uint16(page[ptrBase+2*i : ptrBase+2*i+2]))
-		record, err := parseTableLeafCell(page[cellOffset:])
+		record, err := parseTableLeafCell(raw, pageSize, reserved, page[cellOffset:])
 		if err != nil {
 			return nil, err
 		}
@@ -248,78 +258,7 @@ func readTableLeaf(page []byte, offset int) ([]sqliteRecord, error) {
 	return rows, nil
 }
 
-func readIndexInterior(raw []byte, pageSize int, page []byte, offset int) ([]sqliteRecord, error) {
-	if len(page[offset:]) < 12 {
-		return nil, fmt.Errorf("interior index page truncated")
-	}
-
-	cellCount := int(binary.BigEndian.Uint16(page[offset+3 : offset+5]))
-	rightMost := int(binary.BigEndian.Uint32(page[offset+8 : offset+12]))
-	ptrBase := offset + 12
-	if ptrBase+cellCount*2 > len(page) {
-		return nil, fmt.Errorf("interior index cell pointer array truncated")
-	}
-
-	var rows []sqliteRecord
-	for i := 0; i < cellCount; i++ {
-		cellOffset := int(binary.BigEndian.Uint16(page[ptrBase+2*i : ptrBase+2*i+2]))
-		if cellOffset+4 > len(page) {
-			return nil, fmt.Errorf("interior index cell %d truncated", i)
-		}
-		childPage := int(binary.BigEndian.Uint32(page[cellOffset : cellOffset+4]))
-		childRows, err := readTableRecords(raw, pageSize, childPage)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, childRows...)
-	}
-
-	if rightMost != 0 {
-		childRows, err := readTableRecords(raw, pageSize, rightMost)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, childRows...)
-	}
-
-	return rows, nil
-}
-
-func readIndexLeaf(page []byte, offset int) ([]sqliteRecord, error) {
-	cellCount := int(binary.BigEndian.Uint16(page[offset+3 : offset+5]))
-	ptrBase := offset + 8
-	if ptrBase+cellCount*2 > len(page) {
-		return nil, fmt.Errorf("leaf index cell pointer array truncated")
-	}
-
-	rows := make([]sqliteRecord, 0, cellCount)
-	for i := 0; i < cellCount; i++ {
-		cellOffset := int(binary.BigEndian.Uint16(page[ptrBase+2*i : ptrBase+2*i+2]))
-		record, err := parseIndexLeafCell(page[cellOffset:])
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, record)
-	}
-	return rows, nil
-}
-
-func parseIndexLeafCell(cell []byte) (sqliteRecord, error) {
-	payloadLen, n, err := readVarint(cell)
-	if err != nil {
-		return nil, err
-	}
-	cell = cell[n:]
-
-	if payloadLen > uint64(len(cell)) {
-		return nil, fmt.Errorf("index payload truncated: need %d bytes, have %d", payloadLen, len(cell))
-	}
-
-	payload := cell[:payloadLen]
-	return parseRecordPayload(payload)
-}
-
-func parseTableLeafCell(cell []byte) (sqliteRecord, error) {
+func parseTableLeafCell(raw []byte, pageSize, reserved int, cell []byte) (sqliteRecord, error) {
 	payloadLen, n, err := readVarint(cell)
 	if err != nil {
 		return nil, err
@@ -332,12 +271,185 @@ func parseTableLeafCell(cell []byte) (sqliteRecord, error) {
 	}
 	cell = cell[n:]
 
-	if payloadLen > uint64(len(cell)) {
-		return nil, fmt.Errorf("payload truncated: need %d bytes, have %d", payloadLen, len(cell))
+	payload, err := readCellPayload(raw, pageSize, reserved, payloadLen, cell, 0x0d)
+	if err != nil {
+		return nil, err
+	}
+	return parseRecordPayload(payload)
+}
+
+func readCellPayload(raw []byte, pageSize, reserved int, payloadLen uint64, cell []byte, pageType byte) ([]byte, error) {
+	if payloadLen > math.MaxInt {
+		return nil, fmt.Errorf("payload too large: %d bytes", payloadLen)
 	}
 
-	payload := cell[:payloadLen]
-	return parseRecordPayload(payload)
+	usableSize := pageSize - reserved
+	if usableSize <= 0 {
+		return nil, fmt.Errorf("invalid usable page size %d", usableSize)
+	}
+
+	local, err := localPayloadBytes(int(payloadLen), usableSize, pageType)
+	if err != nil {
+		return nil, err
+	}
+
+	if local > len(cell) {
+		return nil, fmt.Errorf("payload truncated: need %d bytes, have %d", local, len(cell))
+	}
+
+	payload := make([]byte, int(payloadLen))
+	copy(payload, cell[:local])
+
+	if int(payloadLen) == local {
+		return payload, nil
+	}
+
+	if local+4 > len(cell) {
+		return nil, fmt.Errorf("overflow pointer truncated")
+	}
+
+	overflowPage := binary.BigEndian.Uint32(cell[local : local+4])
+	remaining := int(payloadLen) - local
+	if remaining <= 0 {
+		return payload, nil
+	}
+
+	overflowData, err := readOverflowChain(raw, pageSize, reserved, overflowPage, remaining)
+	if err != nil {
+		return nil, err
+	}
+	if len(overflowData) != remaining {
+		return nil, fmt.Errorf("overflow chain truncated: need %d bytes, got %d", remaining, len(overflowData))
+	}
+	copy(payload[local:], overflowData)
+
+	return payload, nil
+}
+
+func localPayloadBytes(payloadLen int, usableSize int, pageType byte) (int, error) {
+	if payloadLen < 0 {
+		return 0, fmt.Errorf("invalid payload length %d", payloadLen)
+	}
+	if usableSize <= 0 {
+		return 0, fmt.Errorf("invalid usable page size %d", usableSize)
+	}
+
+	switch pageType {
+	case 0x0d: // table leaf
+		maxLocal := usableSize - 35
+		if maxLocal < 0 {
+			maxLocal = 0
+		}
+		if payloadLen <= maxLocal {
+			return payloadLen, nil
+		}
+		minLocal := ((usableSize - 12) * 32 / 255) - 23
+		if minLocal < 0 {
+			minLocal = 0
+		}
+		modBase := usableSize - 4
+		if modBase <= 0 {
+			modBase = 1
+		}
+		local := minLocal + (payloadLen-minLocal)%modBase
+		if local > maxLocal {
+			local = minLocal
+		}
+		return local, nil
+	case 0x0a: // index leaf
+		maxLocal := usableSize - 12
+		if maxLocal < 0 {
+			maxLocal = 0
+		}
+		if payloadLen <= maxLocal {
+			return payloadLen, nil
+		}
+		minLocal := ((usableSize - 12) * 32 / 255) - 23
+		if minLocal < 0 {
+			minLocal = 0
+		}
+		modBase := usableSize - 4
+		if modBase <= 0 {
+			modBase = 1
+		}
+		local := minLocal + (payloadLen-minLocal)%modBase
+		if local > maxLocal {
+			local = minLocal
+		}
+		return local, nil
+	default:
+		if payloadLen > usableSize {
+			payloadLen = usableSize
+		}
+		return payloadLen, nil
+	}
+}
+
+func readOverflowChain(raw []byte, pageSize, reserved int, startPage uint32, remaining int) ([]byte, error) {
+	if remaining <= 0 {
+		return nil, nil
+	}
+	if startPage == 0 {
+		return nil, fmt.Errorf("missing overflow page for %d bytes", remaining)
+	}
+
+	usableSize := pageSize - reserved
+	if usableSize <= 4 {
+		return nil, fmt.Errorf("invalid usable page size %d for overflow", usableSize)
+	}
+
+	if pageSize <= 0 {
+		return nil, fmt.Errorf("invalid page size %d", pageSize)
+	}
+	totalPages := (len(raw) + pageSize - 1) / pageSize
+	if totalPages <= 0 {
+		totalPages = 1
+	}
+
+	data := make([]byte, 0, remaining)
+	current := startPage
+	pagesVisited := 0
+
+	for remaining > 0 {
+		if current == 0 {
+			break
+		}
+		page, _, err := getPage(raw, pageSize, int(current))
+		if err != nil {
+			return nil, err
+		}
+		if len(page) < 4 {
+			return nil, fmt.Errorf("overflow page %d truncated", current)
+		}
+		next := binary.BigEndian.Uint32(page[:4])
+
+		chunk := page[4:]
+		usableChunk := usableSize - 4
+		if usableChunk < 0 {
+			usableChunk = 0
+		}
+		if usableChunk < len(chunk) {
+			chunk = chunk[:usableChunk]
+		}
+		if len(chunk) > remaining {
+			chunk = chunk[:remaining]
+		}
+
+		data = append(data, chunk...)
+		remaining -= len(chunk)
+		current = next
+
+		pagesVisited++
+		if pagesVisited > totalPages {
+			return nil, fmt.Errorf("overflow chain exceeds database size")
+		}
+	}
+
+	if remaining > 0 {
+		return data, fmt.Errorf("overflow chain truncated: %d bytes missing", remaining)
+	}
+
+	return data, nil
 }
 
 func parseRecordPayload(payload []byte) (sqliteRecord, error) {
