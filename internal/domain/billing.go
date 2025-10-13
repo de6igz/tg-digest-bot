@@ -10,6 +10,9 @@ import (
 var (
 	// ErrInvoiceNotFound возвращается, когда счёт не найден.
 	ErrInvoiceNotFound = errors.New("invoice not found")
+
+	// ErrInsufficientFunds возвращается, когда на счёте недостаточно средств.
+	ErrInsufficientFunds = errors.New("insufficient funds")
 )
 
 // Money описывает сумму в минимальных единицах валюты.
@@ -86,6 +89,15 @@ type RegisterIncomingPaymentParams struct {
 	IdempotencyKey string
 }
 
+// ChargeAccountParams содержит параметры списания средств.
+type ChargeAccountParams struct {
+	AccountID      int64
+	Amount         Money
+	Description    string
+	Metadata       map[string]any
+	IdempotencyKey string
+}
+
 // Billing определяет контракт внутреннего биллинга.
 type Billing interface {
 	EnsureAccount(ctx context.Context, userID int64) (BillingAccount, error)
@@ -94,6 +106,7 @@ type Billing interface {
 	RegisterIncomingPayment(ctx context.Context, params RegisterIncomingPaymentParams) (Payment, error)
 	GetInvoiceByID(ctx context.Context, invoiceID int64) (Invoice, error)
 	GetInvoiceByIdempotencyKey(ctx context.Context, key string) (Invoice, error)
+	ChargeAccount(ctx context.Context, params ChargeAccountParams) (Payment, error)
 }
 
 // ExtractInvoiceSBPMetadata извлекает информацию о QR-коде СБП из метаданных счёта.

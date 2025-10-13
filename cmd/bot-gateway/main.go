@@ -15,12 +15,14 @@ import (
 	"tg-digest-bot/internal/adapters/bot"
 	"tg-digest-bot/internal/adapters/mtproto"
 	"tg-digest-bot/internal/adapters/repo"
+	"tg-digest-bot/internal/adapters/tochka"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
 	"tg-digest-bot/internal/infra/log"
 	"tg-digest-bot/internal/infra/metrics"
 	"tg-digest-bot/internal/infra/queue"
+	billingusecase "tg-digest-bot/internal/usecase/billing"
 	"tg-digest-bot/internal/usecase/channels"
 	"tg-digest-bot/internal/usecase/schedule"
 )
@@ -41,6 +43,14 @@ func main() {
 	defer pool.Close()
 
 	repoAdapter := repo.NewPostgres(pool)
+	tochkaClient := tochka.NewClient(tochka.Config{
+		BaseURL:     cfg.Tochka.BaseURL,
+		MerchantID:  cfg.Tochka.MerchantID,
+		AccountID:   cfg.Tochka.AccountID,
+		AccessToken: cfg.Tochka.AccessToken,
+		Timeout:     cfg.Tochka.Timeout,
+	})
+	sbpService := billingusecase.NewService(repoAdapter, tochkaClient, logger.With().Str("component", "billing_sbp").Logger())
 	if cfg.RabbitURL == "" {
 		logger.Fatal().Msg("не указан адрес RabbitMQ (RABBITMQ_URL)")
 	}
@@ -73,7 +83,7 @@ func main() {
 	if err != nil {
 		logger.Fatal().Err(err).Msg("не удалось создать MTProto резолвер")
 	}
-        channelService := channels.NewService(repoAdapter, resolver, repoAdapter)
+	channelService := channels.NewService(repoAdapter, resolver, repoAdapter)
 	scheduleService := schedule.NewService(repoAdapter)
 
 	botAPI, err := tgbotapi.NewBotAPI(cfg.Telegram.Token)
@@ -81,7 +91,7 @@ func main() {
 		logger.Fatal().Err(err).Msg("не удалось создать бота")
 	}
 
-        h := bot.NewHandler(botAPI, logger, channelService, scheduleService, repoAdapter, digestQueue, cfg.Limits.DigestMax)
+	h := bot.NewHandler(botAPI, logger, channelService, scheduleService, repoAdapter, repoAdapter, sbpService, digestQueue, cfg.Limits.DigestMax, cfg.Tochka.NotificationURL)
 
 	r := chi.NewRouter()
 	r.Post("/bot/webhook", func(w http.ResponseWriter, r *http.Request) {

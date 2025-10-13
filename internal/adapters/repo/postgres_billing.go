@@ -173,6 +173,9 @@ func (p *Postgres) RegisterIncomingPayment(ctx context.Context, params domain.Re
 	if params.IdempotencyKey == "" {
 		return domain.Payment{}, fmt.Errorf("idempotency key is required")
 	}
+	if params.Amount.Amount <= 0 {
+		return domain.Payment{}, fmt.Errorf("amount must be positive")
+	}
 	ctx, cancel := p.connCtxWithParent(ctx)
 	defer cancel()
 
@@ -243,7 +246,7 @@ RETURNING id, account_id, invoice_id, amount, currency, metadata, status, idempo
 		if !errors.Is(scanErr, pgx.ErrNoRows) {
 			return domain.Payment{}, scanErr
 		}
-		payment, err = p.getPaymentByKey(ctx, tx, params)
+		payment, err = p.getPaymentByIdempotencyKey(ctx, tx, params.IdempotencyKey)
 		if err != nil {
 			return domain.Payment{}, err
 		}
@@ -387,15 +390,132 @@ FOR UPDATE
 	return invoice, nil
 }
 
-func (p *Postgres) getPaymentByKey(ctx context.Context, tx pgx.Tx, params domain.RegisterIncomingPaymentParams) (domain.Payment, error) {
+func (p *Postgres) getPaymentByIdempotencyKey(ctx context.Context, tx pgx.Tx, key string) (domain.Payment, error) {
 	start := time.Now()
 	row := tx.QueryRow(ctx, `
 SELECT id, account_id, invoice_id, amount, currency, metadata, status, idempotency_key, created_at, updated_at, completed_at
 FROM billing_payments
 WHERE idempotency_key = $1
-`, params.IdempotencyKey)
+`, key)
 	payment, err := scanPayment(row)
 	metrics.ObserveNetworkRequest("postgres", "billing_payments_get_by_key", "billing_payments", start, err)
+	return payment, err
+}
+
+func (p *Postgres) ChargeAccount(ctx context.Context, params domain.ChargeAccountParams) (domain.Payment, error) {
+	if params.IdempotencyKey == "" {
+		return domain.Payment{}, fmt.Errorf("idempotency key is required")
+	}
+	if params.Amount.Amount <= 0 {
+		return domain.Payment{}, fmt.Errorf("amount must be positive")
+	}
+	ctx, cancel := p.connCtxWithParent(ctx)
+	defer cancel()
+
+	account, err := p.getAccount(ctx, params.AccountID)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	if params.Amount.Currency == "" {
+		params.Amount.Currency = account.Balance.Currency
+	}
+	if account.Balance.Currency != params.Amount.Currency {
+		return domain.Payment{}, fmt.Errorf("account currency mismatch")
+	}
+
+	start := time.Now()
+	tx, err := p.pool.BeginTx(ctx, pgx.TxOptions{})
+	metrics.ObserveNetworkRequest("postgres", "begin_tx", "billing_payments", start, err)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	accForUpdate, err := p.lockAccount(ctx, tx, params.AccountID)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	if accForUpdate.Balance.Currency != params.Amount.Currency {
+		return domain.Payment{}, fmt.Errorf("account currency mismatch")
+	}
+	if accForUpdate.Balance.Amount < params.Amount.Amount {
+		return domain.Payment{}, domain.ErrInsufficientFunds
+	}
+
+	var meta []byte
+	if params.Metadata != nil || params.Description != "" {
+		metadata := make(map[string]any, len(params.Metadata)+1)
+		for k, v := range params.Metadata {
+			metadata[k] = v
+		}
+		if params.Description != "" {
+			metadata["description"] = params.Description
+		}
+		meta, err = json.Marshal(metadata)
+		if err != nil {
+			return domain.Payment{}, err
+		}
+	}
+
+	start = time.Now()
+	row := tx.QueryRow(ctx, `
+INSERT INTO billing_payments (account_id, amount, currency, metadata, idempotency_key)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (idempotency_key) DO NOTHING
+RETURNING id, account_id, invoice_id, amount, currency, metadata, status, idempotency_key, created_at, updated_at, completed_at
+`, params.AccountID, -params.Amount.Amount, params.Amount.Currency, meta, params.IdempotencyKey)
+	payment, scanErr := scanPayment(row)
+	metrics.ObserveNetworkRequest("postgres", "billing_payments_create_charge", "billing_payments", start, scanErr)
+	if scanErr != nil {
+		if !errors.Is(scanErr, pgx.ErrNoRows) {
+			return domain.Payment{}, scanErr
+		}
+		payment, err = p.getPaymentByIdempotencyKey(ctx, tx, params.IdempotencyKey)
+		if err != nil {
+			return domain.Payment{}, err
+		}
+		if payment.AccountID != params.AccountID || payment.Amount.Amount != -params.Amount.Amount || payment.Amount.Currency != params.Amount.Currency {
+			return domain.Payment{}, fmt.Errorf("payment idempotency conflict")
+		}
+		start = time.Now()
+		err = tx.Commit(ctx)
+		metrics.ObserveNetworkRequest("postgres", "commit", "billing_payments", start, err)
+		return payment, err
+	}
+
+	start = time.Now()
+	_, err = tx.Exec(ctx, `
+UPDATE billing_accounts
+SET balance = balance - $1, updated_at = now()
+WHERE id = $2
+`, params.Amount.Amount, payment.AccountID)
+	metrics.ObserveNetworkRequest("postgres", "billing_accounts_debit_balance", "billing_accounts", start, err)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+
+	now := time.Now()
+	start = time.Now()
+	_, err = tx.Exec(ctx, `
+UPDATE billing_payments
+SET status = 'completed', completed_at = $2, updated_at = now()
+WHERE id = $1
+`, payment.ID, now)
+	metrics.ObserveNetworkRequest("postgres", "billing_payments_mark_charge_completed", "billing_payments", start, err)
+	if err != nil {
+		return domain.Payment{}, err
+	}
+	payment.Status = "completed"
+	payment.CompletedAt = &now
+	payment.UpdatedAt = now
+
+	start = time.Now()
+	err = tx.Commit(ctx)
+	metrics.ObserveNetworkRequest("postgres", "commit", "billing_payments", start, err)
 	return payment, err
 }
 
