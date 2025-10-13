@@ -29,7 +29,6 @@ type Handler struct {
 	scheduleUC  *schedule.Service
 	users       domain.UserRepo
 	jobs        domain.DigestQueue
-	freeLimit   int
 	maxDigest   int
 	mu          sync.Mutex
 	pendingDrop map[int64]time.Time
@@ -37,7 +36,7 @@ type Handler struct {
 }
 
 // NewHandler создаёт обработчик.
-func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, jobs domain.DigestQueue, freeLimit, maxDigest int) *Handler {
+func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, jobs domain.DigestQueue, maxDigest int) *Handler {
 	return &Handler{
 		bot:         bot,
 		log:         log,
@@ -45,7 +44,6 @@ func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Se
 		scheduleUC:  scheduleUC,
 		users:       userRepo,
 		jobs:        jobs,
-		freeLimit:   freeLimit,
 		maxDigest:   maxDigest,
 		pendingDrop: make(map[int64]time.Time),
 		pendingTime: make(map[int64]struct{}),
@@ -120,11 +118,44 @@ func (h *Handler) handleStart(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 	locale := msg.From.LanguageCode
-	if _, err := h.users.UpsertByTGID(msg.From.ID, locale, ""); err != nil {
+	user, created, err := h.users.UpsertByTGID(msg.From.ID, locale, "")
+	if err != nil {
 		h.reply(msg.Chat.ID, fmt.Sprintf("Ошибка сохранения профиля: %v", err), nil)
 		return
 	}
-	h.reply(msg.Chat.ID, h.buildStartMessage(), h.mainKeyboard())
+	payload := ""
+	if msg.Text != "" {
+		fields := strings.Fields(msg.Text)
+		if len(fields) > 1 {
+			payload = fields[1]
+		}
+	}
+	var referralResult domain.ReferralResult
+	if payload != "" && (created || user.ReferredByID == nil) {
+		result, applyErr := h.users.ApplyReferral(payload, user.ID)
+		if applyErr != nil {
+			h.log.Error().Err(applyErr).Int64("user", msg.From.ID).Msg("не удалось применить реферальный код")
+		} else {
+			user = result.User
+			referralResult = result
+		}
+	}
+
+	sections := h.buildStartSections(user)
+	for i, section := range sections {
+		if strings.TrimSpace(section) == "" {
+			continue
+		}
+		if i == 0 {
+			h.reply(msg.Chat.ID, section, h.mainKeyboard())
+			continue
+		}
+		h.reply(msg.Chat.ID, section, nil)
+	}
+
+	if referralResult.ReferrerUpgraded && referralResult.Referrer != nil {
+		h.notifyPlanUpgrade(*referralResult.Referrer, referralResult.PreviousRole)
+	}
 }
 
 func (h *Handler) handleHelp(chatID int64) {
@@ -142,7 +173,17 @@ func (h *Handler) handleAdd(ctx context.Context, chatID int64, tgUserID int64, a
 		case errors.Is(err, channels.ErrAliasInvalid):
 			h.reply(chatID, "Некорректный алиас. Пример: /add @example", nil)
 		case errors.Is(err, channels.ErrChannelLimit):
-			h.reply(chatID, fmt.Sprintf("Превышен лимит %d каналов. Удалите канал перед добавлением нового.", h.freeLimit), nil)
+			user, getErr := h.users.GetByTGID(tgUserID)
+			if getErr != nil {
+				h.reply(chatID, "Превышен лимит каналов для вашего тарифа.", nil)
+				return
+			}
+			plan := user.Plan()
+			if plan.ChannelLimit > 0 {
+				h.reply(chatID, fmt.Sprintf("Тариф %s позволяет добавить до %d каналов. Удалите канал или обновите тариф.", plan.Name, plan.ChannelLimit), nil)
+			} else {
+				h.reply(chatID, "Для вашего тарифа нет ограничений по каналам, но произошла ошибка. Попробуйте позже.", nil)
+			}
 		case errors.Is(err, channels.ErrPrivateChannel):
 			h.reply(chatID, "Канал приватный или недоступен. Добавьте публичный канал.", nil)
 		default:
@@ -372,6 +413,10 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 		h.reply(cb.Message.Chat.ID, "Отправьте /add @alias", nil)
 	case data == "help_menu":
 		h.reply(cb.Message.Chat.ID, h.buildHelpMessage(), h.mainKeyboard())
+	case data == "plan_info":
+		h.sendPlanInfo(cb.Message.Chat.ID, cb.From.ID)
+	case data == "referral_info":
+		h.sendReferralInfo(cb.Message.Chat.ID, cb.From.ID)
 	case data == "digest_now":
 		h.handleDigestNow(ctx, cb.Message.Chat.ID, cb.From.ID)
 	case data == "digest_all":
@@ -539,16 +584,36 @@ func (h *Handler) handleDeleteChannel(ctx context.Context, chatID, tgUserID, cha
 	h.reply(chatID, "Канал удалён", nil)
 }
 
-func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID int64) {
-	job := domain.DigestJob{
-		UserTGID:    tgUserID,
-		ChatID:      chatID,
-		ChannelID:   channelID,
-		Date:        time.Now().UTC(),
-		RequestedAt: time.Now().UTC(),
-		Cause:       domain.DigestCauseManual,
+func (h *Handler) reserveManualRequest(chatID int64, user domain.User) (domain.ManualRequestState, bool) {
+	state, err := h.users.ReserveManualRequest(user.ID, time.Now().UTC())
+	if err != nil {
+		h.log.Error().Err(err).Int64("user", user.TGUserID).Msg("не удалось зарезервировать ручной запрос")
+		h.reply(chatID, "Не удалось обработать запрос. Попробуйте позже.", nil)
+		return domain.ManualRequestState{}, false
 	}
+	if !state.Allowed {
+		h.replyManualLimit(chatID, state)
+		return state, false
+	}
+	return state, true
+}
 
+func (h *Handler) replyManualLimit(chatID int64, state domain.ManualRequestState) {
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Вы достигли лимита запросов для тарифа %s.", state.Plan.Name))
+	switch {
+	case state.Plan.ManualDailyLimit <= 0:
+		lines = append(lines, "Лимитов для этого тарифа нет, попробуйте повторить запрос позже или обратитесь в поддержку.")
+	case state.Plan.Role == domain.UserRoleFree && state.Plan.ManualIntroTotal > 0:
+		lines = append(lines, fmt.Sprintf("После первых %d запросов доступен %d запрос в сутки.", state.Plan.ManualIntroTotal, state.Plan.ManualDailyLimit))
+		lines = append(lines, "Попробуйте завтра или обновите тариф.")
+	default:
+		lines = append(lines, fmt.Sprintf("Лимит — %d запросов в сутки. Попробуйте завтра или обновите тариф.", state.Plan.ManualDailyLimit))
+	}
+	h.reply(chatID, strings.Join(lines, "\n"), nil)
+}
+
+func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID int64) {
 	var channelName string
 	if channelID > 0 {
 		channels, err := h.channelUC.ListChannels(ctx, tgUserID, 100, 0)
@@ -570,6 +635,25 @@ func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID
 			h.reply(chatID, "Канал не найден среди ваших подписок", nil)
 			return
 		}
+	}
+
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	if _, ok := h.reserveManualRequest(chatID, user); !ok {
+		return
+	}
+
+	now := time.Now().UTC()
+	job := domain.DigestJob{
+		UserTGID:    tgUserID,
+		ChatID:      chatID,
+		ChannelID:   channelID,
+		Date:        now,
+		RequestedAt: now,
+		Cause:       domain.DigestCauseManual,
 	}
 
 	if err := h.jobs.Enqueue(ctx, job); err != nil {
@@ -598,12 +682,21 @@ func (h *Handler) enqueueDigestByTags(ctx context.Context, chatID, tgUserID int6
 		h.reply(chatID, "Укажите теги для дайджеста", nil)
 		return
 	}
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	if _, ok := h.reserveManualRequest(chatID, user); !ok {
+		return
+	}
+	now := time.Now().UTC()
 	job := domain.DigestJob{
 		UserTGID:    tgUserID,
 		ChatID:      chatID,
 		Tags:        cleaned,
-		Date:        time.Now().UTC(),
-		RequestedAt: time.Now().UTC(),
+		Date:        now,
+		RequestedAt: now,
 		Cause:       domain.DigestCauseManual,
 	}
 	if err := h.jobs.Enqueue(ctx, job); err != nil {
@@ -737,27 +830,197 @@ func (h *Handler) mainKeyboard() *tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("🗓 Расписание", "set_time"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🎯 Мой тариф", "plan_info"),
+			tgbotapi.NewInlineKeyboardButtonData("🎁 Рефералы", "referral_info"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("ℹ️ Помощь", "help_menu"),
 		),
 	)
 	return &buttons
 }
 
-func (h *Handler) buildStartMessage() string {
-	lines := []string{
+func (h *Handler) mainPlanLines(plan domain.UserPlan) (string, string) {
+	channel := "Каналы: без ограничений."
+	if plan.ChannelLimit > 0 {
+		channel = fmt.Sprintf("Каналы: до %d сохранённых.", plan.ChannelLimit)
+	}
+	manual := "Ручные дайджесты: без ограничений."
+	switch {
+	case plan.ManualDailyLimit <= 0:
+		manual = "Ручные дайджесты: без ограничений."
+	case plan.ManualIntroTotal > 0:
+		manual = fmt.Sprintf("Ручные дайджесты: %d мгновенно, затем до %d в день.", plan.ManualIntroTotal, plan.ManualDailyLimit)
+	default:
+		manual = fmt.Sprintf("Ручные дайджесты: до %d в день.", plan.ManualDailyLimit)
+	}
+	return channel, manual
+}
+
+func (h *Handler) buildStartSections(user domain.User) []string {
+	plan := user.Plan()
+	channelLine, manualLine := h.mainPlanLines(plan)
+
+	intro := []string{
 		"👋 Добро пожаловать в TG Digest Bot!",
 		"",
-		"Как пользоваться ботом:",
-		"1. ➕ Добавьте канал — кнопка \"Добавить канал\" или команда /add @alias.",
-		fmt.Sprintf("   Вам доступно до %d каналов.", h.freeLimit),
-		"2. 🏷 Назначьте теги: /tag @alias новости, аналитика.",
-		"3. 📰 Соберите дайджест за последние 24 часа — кнопка \"Дайджест\" или команда /digest_now.",
-		"   Чтобы получить дайджест по темам, используйте /digest_tag новости.",
-		"4. 🗓 Настройте автоматическую рассылку — кнопка \"Расписание\" или команда /schedule 21:30.",
+		fmt.Sprintf("Ваш текущий тариф: %s.", plan.Name),
 		"",
-		"Под кнопкой \"ℹ️ Помощь\" вы найдёте полный список команд и примеров.",
+		"Основные лимиты:",
+		fmt.Sprintf("• %s", channelLine),
+		fmt.Sprintf("• %s", manualLine),
+		"",
+		"Используйте кнопки под сообщением, чтобы сразу перейти к нужному действию.",
 	}
+
+	quickStart := []string{
+		"🚀 Быстрый старт:",
+		"• ➕ Добавьте канал через кнопку «Добавить канал» или команду /add @alias.",
+		"• 🏷 Назначьте теги командой /tag @alias тема1, тема2, чтобы группировать каналы.",
+		"• 📰 Получите дайджест за 24 часа кнопкой «Дайджест» или командой /digest_now.",
+		"• 📌 Попробуйте тематический дайджест через «Дайджест по тегам» или /digest_tag новости.",
+		"• 🗓 Настройте автоматическую рассылку кнопкой «Расписание» или /schedule 21:30.",
+	}
+
+	var sections []string
+	sections = append(sections, strings.Join(intro, "\n"), strings.Join(quickStart, "\n"))
+
+	if referral := h.buildReferralPreview(user); referral != "" {
+		sections = append(sections, referral)
+	}
+
+	return sections
+}
+
+func (h *Handler) buildReferralPreview(user domain.User) string {
+	code := strings.TrimSpace(user.ReferralCode)
+	if code == "" {
+		return ""
+	}
+	link := h.referralLink(user)
+	lines := []string{
+		"🎁 Реферальная программа:",
+		"• Пригласите 3 друзей — тариф Plus, 5 — Pro.",
+		fmt.Sprintf("• Уже приглашено: %d.", user.ReferralsCount),
+	}
+	if link != "" {
+		lines = append(lines, fmt.Sprintf("• Ваша ссылка: %s", link))
+	}
+	lines = append(lines, "• Откройте раздел «🎁 Рефералы», чтобы узнать подробности.")
 	return strings.Join(lines, "\n")
+}
+
+func (h *Handler) referralLink(user domain.User) string {
+	code := strings.TrimSpace(user.ReferralCode)
+	if code == "" {
+		return ""
+	}
+	username := strings.TrimSpace(h.bot.Self.UserName)
+	if username == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://t.me/%s?start=%s", username, url.QueryEscape(code))
+}
+
+func (h *Handler) buildPlanInfoMessage(user domain.User) string {
+	plan := user.Plan()
+	channelLine, manualLine := h.mainPlanLines(plan)
+	lines := []string{
+		fmt.Sprintf("🎯 Ваш тариф: %s", plan.Name),
+		"",
+		"Текущие лимиты:",
+		fmt.Sprintf("• %s", channelLine),
+		fmt.Sprintf("• %s", manualLine),
+	}
+	if plan.ManualIntroTotal > 0 {
+		lines = append(lines,
+			"",
+			"Первые мгновенные запросы расходуются автоматически при использовании /digest_now.",
+		)
+	}
+	lines = append(lines,
+		"",
+		"Нажмите «🎁 Рефералы», чтобы увеличить лимиты приглашениями.",
+	)
+	return strings.Join(lines, "\n")
+}
+
+func (h *Handler) buildReferralInfoMessage(user domain.User) string {
+	plusTarget, proTarget := domain.ReferralProgressTargets()
+	link := h.referralLink(user)
+	lines := []string{
+		"🎁 Реферальная программа",
+		"",
+		fmt.Sprintf("Приглашено друзей: %d.", user.ReferralsCount),
+		fmt.Sprintf("• %d приглашений — тариф Plus.", plusTarget),
+		fmt.Sprintf("• %d приглашений — тариф Pro.", proTarget),
+	}
+	switch {
+	case user.ReferralsCount < plusTarget:
+		remaining := plusTarget - user.ReferralsCount
+		lines = append(lines, "", fmt.Sprintf("До тарифа Plus осталось пригласить %d.", remaining))
+	case user.ReferralsCount < proTarget:
+		remaining := proTarget - user.ReferralsCount
+		lines = append(lines, "", fmt.Sprintf("До тарифа Pro осталось пригласить %d.", remaining))
+	default:
+		lines = append(lines, "", "Вы уже достигли максимального тарифа по рефералам. Спасибо, что делитесь ботом!")
+	}
+	if link != "" {
+		lines = append(lines, "", fmt.Sprintf("Поделитесь ссылкой: %s", link))
+	}
+	lines = append(lines,
+		"",
+		"Ссылка учитывает только новых пользователей и не засчитывается при переходе самим собой.",
+	)
+	return strings.Join(lines, "\n")
+}
+
+func (h *Handler) referralKeyboard(user domain.User) *tgbotapi.InlineKeyboardMarkup {
+	link := h.referralLink(user)
+	if link == "" {
+		return nil
+	}
+	markup := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("🔗 Открыть ссылку", link),
+		),
+	)
+	return &markup
+}
+
+func (h *Handler) sendPlanInfo(chatID, tgUserID int64) {
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	h.reply(chatID, h.buildPlanInfoMessage(user), nil)
+}
+
+func (h *Handler) sendReferralInfo(chatID, tgUserID int64) {
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	h.reply(chatID, h.buildReferralInfoMessage(user), h.referralKeyboard(user))
+}
+
+func (h *Handler) notifyPlanUpgrade(user domain.User, previousRole domain.UserRole) {
+	plan := user.Plan()
+	prevPlan := domain.PlanForRole(previousRole)
+	channelLine, manualLine := h.mainPlanLines(plan)
+	lines := []string{
+		"🎉 Ваш тариф обновлён!",
+		fmt.Sprintf("Вы перешли с %s на %s благодаря %d приглашённым друзьям.", prevPlan.Name, plan.Name, user.ReferralsCount),
+		"",
+		"Новые лимиты:",
+		fmt.Sprintf("• %s", channelLine),
+		fmt.Sprintf("• %s", manualLine),
+		"",
+		"Спасибо, что делитесь ботом!",
+	}
+	h.reply(user.TGUserID, strings.Join(lines, "\n"), nil)
 }
 
 func (h *Handler) buildHelpMessage() string {

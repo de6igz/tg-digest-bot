@@ -4,13 +4,29 @@ import "time"
 
 // User описывает пользователя Telegram в системе.
 type User struct {
-	ID        int64
-	TGUserID  int64
-	Locale    string
-	Timezone  string
-	DailyTime time.Time
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                  int64
+	TGUserID            int64
+	Locale              string
+	Timezone            string
+	DailyTime           time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	Role                UserRole
+	ManualRequestsTotal int
+	ManualRequestsToday int
+	ManualRequestsDate  *time.Time
+	ReferralCode        string
+	ReferralsCount      int
+	ReferredByID        *int64
+}
+
+// ReferralResult описывает применение реферального кода.
+type ReferralResult struct {
+	User             User
+	Applied          bool
+	Referrer         *User
+	ReferrerUpgraded bool
+	PreviousRole     UserRole
 }
 
 // Channel описывает публичный канал Telegram.

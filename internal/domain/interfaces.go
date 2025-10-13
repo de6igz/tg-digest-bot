@@ -40,11 +40,13 @@ type DigestService interface {
 
 // UserRepo управляет пользователями.
 type UserRepo interface {
-	UpsertByTGID(tgUserID int64, locale, tz string) (User, error)
+	UpsertByTGID(tgUserID int64, locale, tz string) (User, bool, error)
 	GetByTGID(tgUserID int64) (User, error)
 	ListForDailyTime(now time.Time) ([]User, error)
 	UpdateDailyTime(userID int64, daily time.Time) error
 	DeleteUserData(userID int64) error
+	ReserveManualRequest(userID int64, now time.Time) (ManualRequestState, error)
+	ApplyReferral(code string, newUserID int64) (ReferralResult, error)
 }
 
 // ChannelRepo управляет каналами.
