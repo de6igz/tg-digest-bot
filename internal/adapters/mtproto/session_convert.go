@@ -183,6 +183,10 @@ func readTableRecords(raw []byte, pageSize int, pageNumber int) ([]sqliteRecord,
 		return readTableLeaf(page, headerOffset)
 	case 0x05:
 		return readTableInterior(raw, pageSize, page, headerOffset)
+	case 0x0a:
+		return readIndexLeaf(page, headerOffset)
+	case 0x02:
+		return readIndexInterior(raw, pageSize, page, headerOffset)
 	default:
 		return nil, fmt.Errorf("unsupported b-tree page type 0x%02x", pageType)
 	}
@@ -242,6 +246,77 @@ func readTableLeaf(page []byte, offset int) ([]sqliteRecord, error) {
 		rows = append(rows, record)
 	}
 	return rows, nil
+}
+
+func readIndexInterior(raw []byte, pageSize int, page []byte, offset int) ([]sqliteRecord, error) {
+	if len(page[offset:]) < 12 {
+		return nil, fmt.Errorf("interior index page truncated")
+	}
+
+	cellCount := int(binary.BigEndian.Uint16(page[offset+3 : offset+5]))
+	rightMost := int(binary.BigEndian.Uint32(page[offset+8 : offset+12]))
+	ptrBase := offset + 12
+	if ptrBase+cellCount*2 > len(page) {
+		return nil, fmt.Errorf("interior index cell pointer array truncated")
+	}
+
+	var rows []sqliteRecord
+	for i := 0; i < cellCount; i++ {
+		cellOffset := int(binary.BigEndian.Uint16(page[ptrBase+2*i : ptrBase+2*i+2]))
+		if cellOffset+4 > len(page) {
+			return nil, fmt.Errorf("interior index cell %d truncated", i)
+		}
+		childPage := int(binary.BigEndian.Uint32(page[cellOffset : cellOffset+4]))
+		childRows, err := readTableRecords(raw, pageSize, childPage)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, childRows...)
+	}
+
+	if rightMost != 0 {
+		childRows, err := readTableRecords(raw, pageSize, rightMost)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, childRows...)
+	}
+
+	return rows, nil
+}
+
+func readIndexLeaf(page []byte, offset int) ([]sqliteRecord, error) {
+	cellCount := int(binary.BigEndian.Uint16(page[offset+3 : offset+5]))
+	ptrBase := offset + 8
+	if ptrBase+cellCount*2 > len(page) {
+		return nil, fmt.Errorf("leaf index cell pointer array truncated")
+	}
+
+	rows := make([]sqliteRecord, 0, cellCount)
+	for i := 0; i < cellCount; i++ {
+		cellOffset := int(binary.BigEndian.Uint16(page[ptrBase+2*i : ptrBase+2*i+2]))
+		record, err := parseIndexLeafCell(page[cellOffset:])
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, record)
+	}
+	return rows, nil
+}
+
+func parseIndexLeafCell(cell []byte) (sqliteRecord, error) {
+	payloadLen, n, err := readVarint(cell)
+	if err != nil {
+		return nil, err
+	}
+	cell = cell[n:]
+
+	if payloadLen > uint64(len(cell)) {
+		return nil, fmt.Errorf("index payload truncated: need %d bytes, have %d", payloadLen, len(cell))
+	}
+
+	payload := cell[:payloadLen]
+	return parseRecordPayload(payload)
 }
 
 func parseTableLeafCell(cell []byte) (sqliteRecord, error) {
