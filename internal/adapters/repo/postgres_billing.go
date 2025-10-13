@@ -10,7 +10,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"tg-digest-bot/internal/domain"
@@ -90,9 +89,11 @@ func (p *Postgres) CreateInvoice(ctx context.Context, params domain.CreateInvoic
 		return domain.Invoice{}, fmt.Errorf("account currency mismatch")
 	}
 
-	var meta pgtype.JSONB
+	var meta []byte
 	if params.Metadata != nil {
-		if err := meta.Set(params.Metadata); err != nil {
+		var err error
+		meta, err = json.Marshal(params.Metadata)
+		if err != nil {
 			return domain.Invoice{}, err
 		}
 	}
@@ -221,9 +222,10 @@ func (p *Postgres) RegisterIncomingPayment(ctx context.Context, params domain.Re
 		}
 	}
 
-	var meta pgtype.JSONB
+	var meta []byte
 	if params.Metadata != nil {
-		if err := meta.Set(params.Metadata); err != nil {
+		meta, err = json.Marshal(params.Metadata)
+		if err != nil {
 			return domain.Payment{}, err
 		}
 	}
@@ -411,14 +413,14 @@ func scanAccount(row pgx.Row) (domain.BillingAccount, error) {
 
 func scanInvoice(row pgx.Row) (domain.Invoice, error) {
 	var inv domain.Invoice
-	var metadata pgtype.JSONB
+	var metadata sql.NullString
 	var paidAt sql.NullTime
 	err := row.Scan(&inv.ID, &inv.AccountID, &inv.Amount.Amount, &inv.Amount.Currency, &inv.Description, &metadata, &inv.Status, &inv.IdempotencyKey, &inv.CreatedAt, &inv.UpdatedAt, &paidAt)
 	if err != nil {
 		return domain.Invoice{}, err
 	}
 	if metadata.Valid {
-		if err := json.Unmarshal(metadata.Bytes, &inv.Metadata); err != nil {
+		if err := json.Unmarshal([]byte(metadata.String), &inv.Metadata); err != nil {
 			return domain.Invoice{}, err
 		}
 	}
@@ -434,7 +436,7 @@ func scanInvoice(row pgx.Row) (domain.Invoice, error) {
 
 func scanPayment(row pgx.Row) (domain.Payment, error) {
 	var pay domain.Payment
-	var metadata pgtype.JSONB
+	var metadata sql.NullString
 	var invoiceID sql.NullInt64
 	var completedAt sql.NullTime
 	err := row.Scan(&pay.ID, &pay.AccountID, &invoiceID, &pay.Amount.Amount, &pay.Amount.Currency, &metadata, &pay.Status, &pay.IdempotencyKey, &pay.CreatedAt, &pay.UpdatedAt, &completedAt)
@@ -446,7 +448,7 @@ func scanPayment(row pgx.Row) (domain.Payment, error) {
 		pay.InvoiceID = &id
 	}
 	if metadata.Valid {
-		if err := json.Unmarshal(metadata.Bytes, &pay.Metadata); err != nil {
+		if err := json.Unmarshal([]byte(metadata.String), &pay.Metadata); err != nil {
 			return domain.Payment{}, err
 		}
 	}
