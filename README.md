@@ -5,21 +5,21 @@
 ## Быстрый старт
 
 1. Скопируйте `.env.example` в `.env` и заполните значения токенов Telegram и доступа к БД.
-2. Подготовьте MTProto-аккаунты. Сначала соберите bundle-файл с помощью скрипта `scripts/export_telethon_session.py` (требуется
-   установленный `telethon`):
+2. Подготовьте MTProto-аккаунты. Установите зависимость `telethon` (`pip install telethon`), после чего выполните:
 
    ```bash
-   pip install telethon
-   python3 scripts/export_telethon_session.py \
-     --metadata /путь/к/аккаунту.json \
-     --session /путь/к/аккаунту.session \
-     --output /путь/к/bundle.json
+   make mtproto-import-from-telethon \
+     METADATA=/путь/к/аккаунту.json \
+     SESSION=/путь/к/аккаунту.session \
+     POOL=default # опционально, по умолчанию default
    ```
 
-   Затем импортируйте bundle в БД:
+   Цель Make создаст bundle через `scripts/export_telethon_session.py`, положит его по умолчанию в `build/mtproto/<имя>.bundle.json`
+   (можно задать `BUNDLE=/путь/к/bundle.json`) и передаст его Go-импортёру. При необходимости можно вызвать подцели отдельно:
 
    ```bash
-   go run ./cmd/mtproto-session-importer -bundle /путь/к/bundle.json -pool default
+   make mtproto-bundle METADATA=... SESSION=... OUTPUT=... [NAME=...] [POOL=...] [API_ID=...] [API_HASH=...]
+   make mtproto-import BUNDLE=... [NAME=...] [POOL=...]
    ```
 
    Импортёр берёт API ID/Hash и Telethon string session из bundle, конвертирует сессию в формат gotd и сохраняет аккаунт в выбранный
