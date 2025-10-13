@@ -41,6 +41,16 @@ type AppConfig struct {
 		Model   string        `envconfig:"OPENAI_MODEL" default:"qwen3:4b"`
 		Timeout time.Duration `envconfig:"OPENAI_TIMEOUT" default:"1200s"`
 	} `envconfig:""`
+
+	Tochka struct {
+		BaseURL         string        `envconfig:"TOCHKA_BASE_URL" default:"https://enter.tochka.com"`
+		MerchantID      string        `envconfig:"TOCHKA_MERCHANT_ID"`
+		AccountID       string        `envconfig:"TOCHKA_ACCOUNT_ID"`
+		AccessToken     string        `envconfig:"TOCHKA_ACCESS_TOKEN"`
+		Timeout         time.Duration `envconfig:"TOCHKA_TIMEOUT" default:"15s"`
+		NotificationURL string        `envconfig:"TOCHKA_NOTIFICATION_URL"`
+		WebhookSecret   string        `envconfig:"TOCHKA_WEBHOOK_SECRET"`
+	} `envconfig:""`
 }
 
 // Load загружает конфиг из окружения.
