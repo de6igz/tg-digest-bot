@@ -41,7 +41,7 @@ func ParseIncomingPaymentNotification(data []byte) (IncomingPaymentNotification,
 	}
 	notif := IncomingPaymentNotification{Raw: raw}
 	notif.Event = firstString(raw, "event", "eventType")
-	notif.ID = firstString(raw, "id", "eventId")
+	notif.ID = firstString(raw, "id", "eventId", "operationId", "operation_id")
 
 	payload := firstMap(raw, "payload", "data")
 	notif.Payload = payload
@@ -52,7 +52,7 @@ func ParseIncomingPaymentNotification(data []byte) (IncomingPaymentNotification,
 				notif.OrderID = firstString(orderMap, "orderId", "order_id")
 			}
 		}
-		notif.PaymentID = firstString(payload, "paymentId", "payment_id", "transactionId", "transaction_id")
+		notif.PaymentID = firstString(payload, "paymentId", "payment_id", "transactionId", "transaction_id", "refTransactionId", "ref_transaction_id")
 		notif.QRID = firstString(payload, "qrId", "qrCodeId", "qr_code_id")
 		notif.Status = firstString(payload, "status")
 		notif.PaymentPurpose = firstString(payload, "paymentPurpose", "purpose")
