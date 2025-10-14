@@ -2,7 +2,7 @@ BEGIN;
 
 CREATE TABLE billing_accounts (
     id          BIGSERIAL PRIMARY KEY,
-    user_id     BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    user_id     BIGINT NOT NULL UNIQUE,
     balance     BIGINT NOT NULL DEFAULT 0,
     currency    TEXT   NOT NULL DEFAULT 'RUB',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
