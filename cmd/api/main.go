@@ -15,11 +15,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 
-	"tg-digest-bot/internal/adapters/repo"
+	"tg-digest-bot/internal/adapters/billingclient"
 	"tg-digest-bot/internal/adapters/tochka"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/config"
-	"tg-digest-bot/internal/infra/db"
 	httpinfra "tg-digest-bot/internal/infra/http"
 	"tg-digest-bot/internal/infra/metrics"
 	billingusecase "tg-digest-bot/internal/usecase/billing"
@@ -32,13 +31,17 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	pool, err := db.Connect(cfg.PGDSN)
-	if err != nil {
-		log.Fatal().Err(err).Msg("api: нет подключения к БД")
-	}
-	defer pool.Close()
 
-	repoAdapter := repo.NewPostgres(pool)
+	var billingAdapter domain.Billing
+	if cfg.Billing.BaseURL != "" {
+		client, err := billingclient.New(cfg.Billing.BaseURL, billingclient.WithTimeout(cfg.Billing.Timeout))
+		if err != nil {
+			log.Fatal().Err(err).Msg("api: invalid billing client config")
+		}
+		billingAdapter = client
+	} else {
+		log.Warn().Msg("api: billing base URL is not configured, billing endpoints disabled")
+	}
 	tochkaClient := tochka.NewClient(tochka.Config{
 		BaseURL:     cfg.Tochka.BaseURL,
 		MerchantID:  cfg.Tochka.MerchantID,
@@ -54,7 +57,10 @@ func main() {
 		}
 		webhookPublicKey = key
 	}
-	sbpService := billingusecase.NewService(repoAdapter, tochkaClient, log.With().Str("component", "billing_sbp").Logger())
+	var sbpService *billingusecase.Service
+	if billingAdapter != nil {
+		sbpService = billingusecase.NewService(billingAdapter, tochkaClient, log.With().Str("component", "billing_sbp").Logger())
+	}
 
 	r := chi.NewRouter()
 
@@ -120,6 +126,10 @@ func main() {
 			if params.NotificationURL == "" {
 				params.NotificationURL = cfg.Tochka.NotificationURL
 			}
+			if sbpService == nil {
+				writeError(w, http.StatusServiceUnavailable, "billing is not available")
+				return
+			}
 			result, err := sbpService.CreateInvoiceWithQRCode(r.Context(), params)
 			if err != nil {
 				log.Error().Err(err).Msg("billing: create sbp invoice")
@@ -168,6 +178,10 @@ func main() {
 			writeError(w, http.StatusBadRequest, "invalid webhook payload")
 			return
 		}
+		if sbpService == nil {
+			writeError(w, http.StatusServiceUnavailable, "billing is not available")
+			return
+		}
 		payment, err := sbpService.HandleIncomingPayment(r.Context(), notification)
 		if err != nil {
 			if errors.Is(err, domain.ErrInvoiceNotFound) {
@@ -197,9 +211,6 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
-
-	_ = repoAdapter
-	_ = sbpService
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

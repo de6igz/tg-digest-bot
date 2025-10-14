@@ -52,6 +52,11 @@ type AppConfig struct {
 		WebhookSecret   string        `envconfig:"TOCHKA_WEBHOOK_SECRET"`
 		WebhookKey      string        `envconfig:"TOCHKA_WEBHOOK_PUBLIC_KEY"`
 	} `envconfig:""`
+
+	Billing struct {
+		BaseURL string        `envconfig:"BILLING_BASE_URL"`
+		Timeout time.Duration `envconfig:"BILLING_TIMEOUT" default:"10s"`
+	} `envconfig:""`
 }
 
 // Load загружает конфиг из окружения.
