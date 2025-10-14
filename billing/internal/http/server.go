@@ -46,6 +46,8 @@ type errorResponse struct {
 	Code  string `json:"code"`
 }
 
+// === Requests
+
 type ensureAccountRequest struct {
 	UserID int64 `json:"user_id"`
 }
@@ -75,32 +77,33 @@ type registerPaymentRequest struct {
 }
 
 type createSBPInvoiceRequest struct {
-	UserID          int64          `json:"user_id"`
-	AmountMinor     int64          `json:"amount_minor"`
-	Currency        string         `json:"currency"`
-	Description     string         `json:"description"`
-	PaymentPurpose  string         `json:"payment_purpose"`
-	IdempotencyKey  string         `json:"idempotency_key"`
-	QRType          string         `json:"qr_type"`
-	NotificationURL string         `json:"notification_url"`
-	Metadata        map[string]any `json:"metadata"`
-	Extra           map[string]any `json:"extra"`
+	UserID         int64          `json:"user_id"`
+	Amount         int64          `json:"amount"`
+	Currency       string         `json:"currency"`
+	Description    string         `json:"description"`
+	PaymentPurpose string         `json:"paymentPurpose"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	QRType         string         `json:"qrcType"`
+	RedirectUrl    string         `json:"redirectUrl"`
+	Metadata       map[string]any `json:"metadata"`
+	Extra          map[string]any `json:"extra"`
 }
 
+// === Responses
+
 type sbpQRCodeResponse struct {
-	QRID          string         `json:"qr_id"`
-	PaymentLink   string         `json:"payment_link,omitempty"`
-	Payload       string         `json:"payload,omitempty"`
-	PayloadBase64 string         `json:"payload_base64,omitempty"`
-	Status        string         `json:"status,omitempty"`
-	ExpiresAt     *time.Time     `json:"expires_at,omitempty"`
-	Raw           map[string]any `json:"raw,omitempty"`
+	QRID        string         `json:"qr_id"`
+	PaymentLink string         `json:"payment_link,omitempty"`
+	ExpiresAt   *time.Time     `json:"expires_at,omitempty"`
+	Raw         map[string]any `json:"raw,omitempty"`
 }
 
 type createSBPInvoiceResponse struct {
 	Invoice domain.Invoice    `json:"invoice"`
 	QR      sbpQRCodeResponse `json:"qr"`
 }
+
+// === Server
 
 func NewServer(b domain.Billing, opts ...Option) *Server {
 	srv := &Server{billing: b, log: zerolog.Nop()}
@@ -125,6 +128,7 @@ func (s *Server) Router() http.Handler {
 	}
 	e.Use(middleware.Recover())
 
+	// Billing
 	e.POST("/api/v1/accounts/ensure", s.handleEnsureAccount)
 	e.GET("/api/v1/accounts/by-user/:userID", s.handleGetAccountByUserID)
 	e.POST("/api/v1/accounts/charge", s.handleChargeAccount)
@@ -135,6 +139,7 @@ func (s *Server) Router() http.Handler {
 
 	e.POST("/api/v1/payments/incoming", s.handleRegisterIncomingPayment)
 
+	// SBP
 	if s.sbpService != nil {
 		e.POST("/api/v1/sbp/invoices", s.handleCreateSBPInvoice)
 		e.POST("/api/v1/sbp/webhook", s.handleSBPWebhook)
@@ -142,6 +147,8 @@ func (s *Server) Router() http.Handler {
 
 	return e
 }
+
+// === Handlers
 
 func (s *Server) handleEnsureAccount(c echo.Context) error {
 	var req ensureAccountRequest
@@ -280,35 +287,34 @@ func (s *Server) handleCreateSBPInvoice(c echo.Context) error {
 	if req.UserID == 0 {
 		return writeError(c, http.StatusBadRequest, "invalid_request", "user_id is required")
 	}
-	if req.AmountMinor <= 0 {
+	if req.Amount <= 0 {
 		return writeError(c, http.StatusBadRequest, "invalid_request", "amount_minor must be positive")
 	}
+
 	params := sbpusecase.CreateInvoiceParams{
-		UserID:          req.UserID,
-		Amount:          domain.Money{Amount: req.AmountMinor, Currency: req.Currency},
-		Description:     req.Description,
-		PaymentPurpose:  req.PaymentPurpose,
-		IdempotencyKey:  req.IdempotencyKey,
-		QRType:          req.QRType,
-		NotificationURL: req.NotificationURL,
-		Metadata:        req.Metadata,
-		Extra:           req.Extra,
+		UserID:         req.UserID,
+		Amount:         domain.Money{Amount: req.Amount, Currency: req.Currency},
+		Description:    req.Description,
+		PaymentPurpose: req.PaymentPurpose,
+		IdempotencyKey: req.IdempotencyKey,
+		QRType:         req.QRType,
+		RedirectUrl:    req.RedirectUrl,
+		Metadata:       req.Metadata,
+		Extra:          req.Extra,
 	}
 	result, err := s.sbpService.CreateInvoiceWithQRCode(c.Request().Context(), params)
 	if err != nil {
 		s.log.Error().Err(err).Msg("sbp: create invoice")
 		return writeError(c, http.StatusInternalServerError, "internal_error", "failed to create invoice")
 	}
+
 	resp := createSBPInvoiceResponse{
 		Invoice: result.Invoice,
 		QR: sbpQRCodeResponse{
-			QRID:          result.QR.QRID,
-			PaymentLink:   result.QR.PaymentLink,
-			Payload:       result.QR.Payload,
-			PayloadBase64: result.QR.PayloadBase64,
-			Status:        result.QR.Status,
-			ExpiresAt:     result.QR.ExpiresAt,
-			Raw:           result.QR.Raw,
+			QRID:        result.QR.QRID,
+			PaymentLink: result.QR.PaymentLink,
+			ExpiresAt:   result.QR.ExpiresAt,
+			Raw:         result.QR.Raw,
 		},
 	}
 	return writeJSON(c, http.StatusOK, resp)
@@ -318,6 +324,7 @@ func (s *Server) handleSBPWebhook(c echo.Context) error {
 	if s.sbpService == nil {
 		return writeError(c, http.StatusServiceUnavailable, "sbp_not_configured", "sbp service is not available")
 	}
+	// Простейшая защита: секрет/токен в заголовке или query
 	if s.sbpWebhookSecret != "" {
 		secret := c.Request().Header.Get("X-Webhook-Secret")
 		if secret == "" {
@@ -327,6 +334,7 @@ func (s *Server) handleSBPWebhook(c echo.Context) error {
 			return writeError(c, http.StatusUnauthorized, "unauthorized", "invalid webhook secret")
 		}
 	}
+
 	body, err := io.ReadAll(c.Request().Body)
 	if err != nil {
 		return writeError(c, http.StatusBadRequest, "invalid_request", "failed to read body")
@@ -338,6 +346,7 @@ func (s *Server) handleSBPWebhook(c echo.Context) error {
 		}
 		return writeError(c, http.StatusBadRequest, "invalid_request", "invalid webhook payload")
 	}
+
 	payment, err := s.sbpService.HandleIncomingPayment(c.Request().Context(), notification)
 	if err != nil {
 		if errors.Is(err, domain.ErrInvoiceNotFound) {
@@ -348,6 +357,8 @@ func (s *Server) handleSBPWebhook(c echo.Context) error {
 	}
 	return writeJSON(c, http.StatusOK, map[string]any{"status": "ok", "payment_id": payment.ID})
 }
+
+// === Helpers
 
 func writeJSON(c echo.Context, status int, v any) error {
 	return c.JSON(status, v)

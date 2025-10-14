@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/rs/zerolog/log"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,29 +15,45 @@ import (
 	"billing/internal/domain"
 )
 
-type Config struct {
-	BaseURL     string
-	MerchantID  string
-	AccountID   string
-	AccessToken string
-	Timeout     time.Duration
-}
+const (
+	qrType     = "02"
+	sourceName = "Telegram Digest Bot"
+	ttl        = 600 // seconds
+)
 
 type Client struct {
 	cfg        Config
 	httpClient *http.Client
 }
 
+// tochka/client.go
+
+type Config struct {
+	BaseURL     string
+	APIVersion  string // NEW: e.g. "v1.0"
+	MerchantID  string
+	AccountID   string // bank account number (20 digits)
+	AccessToken string
+	Timeout     time.Duration
+}
+
 func NewClient(cfg Config) *Client {
 	client := &Client{cfg: cfg}
+	if client.cfg.BaseURL == "" {
+		client.cfg.BaseURL = "https://enter.tochka.com"
+	}
+	if client.cfg.APIVersion == "" {
+		client.cfg.APIVersion = "v1.0"
+	}
+
+	if len(cfg.AccountID) != 20 {
+		log.Warn().Msg("account ID should be 20 digits")
+	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
 	client.httpClient = &http.Client{Timeout: timeout}
-	if cfg.BaseURL == "" {
-		client.cfg.BaseURL = "https://enter.tochka.com"
-	}
 	return client
 }
 
@@ -47,23 +64,39 @@ func (c *Client) SetHTTPClient(httpClient *http.Client) {
 }
 
 type RegisterQRCodeRequest struct {
-	Amount          domain.Money
-	Description     string
-	PaymentPurpose  string
-	QRType          string
-	IdempotencyKey  string
-	NotificationURL string
-	Extra           map[string]any
+	Amount         domain.Money
+	Description    string
+	PaymentPurpose string
+	QRType         string
+	IdempotencyKey string
+	RedirectUrl    string
+	Extra          map[string]any
+}
+
+type registerQrCodeData struct {
+	Amount         int64  `json:"amount"`
+	Currency       string `json:"currency"`
+	PaymentPurpose string `json:"paymentPurpose"`
+	QrcType        string `json:"qrcType"`
+	ImageParams    struct {
+		Width     int    `json:"width"`
+		Height    int    `json:"height"`
+		MediaType string `json:"mediaType"`
+	} `json:"imageParams"`
+	SourceName  string `json:"sourceName"`
+	Ttl         int    `json:"ttl"`
+	RedirectUrl string `json:"redirectUrl"`
+}
+
+type RegisterQRCodeDto struct {
+	Data registerQrCodeData `json:"data"`
 }
 
 type RegisterQRCodeResponse struct {
-	QRID          string         `json:"qr_id"`
-	PaymentLink   string         `json:"payment_link,omitempty"`
-	Payload       string         `json:"payload,omitempty"`
-	PayloadBase64 string         `json:"payload_base64,omitempty"`
-	Status        string         `json:"status,omitempty"`
-	ExpiresAt     *time.Time     `json:"expires_at,omitempty"`
-	Raw           map[string]any `json:"raw,omitempty"`
+	QRID        string         `json:"qr_id"`
+	PaymentLink string         `json:"payment_link,omitempty"`
+	Raw         map[string]any `json:"raw,omitempty"`
+	ExpiresAt   *time.Time     `json:"expires_at"`
 }
 
 func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) (RegisterQRCodeResponse, error) {
@@ -78,28 +111,25 @@ func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) 
 		currency = "RUB"
 	}
 
-	payload := make(map[string]any, len(req.Extra)+4)
-	for k, v := range req.Extra {
-		payload[k] = v
-	}
-
-	if _, ok := payload["amount"]; !ok {
-		payload["amount"] = map[string]any{
-			"value":    formatMinorAmount(req.Amount.Amount),
-			"currency": currency,
-		}
-	}
-	if req.Description != "" {
-		payload["description"] = req.Description
-	}
-	if req.PaymentPurpose != "" {
-		payload["paymentPurpose"] = req.PaymentPurpose
-	}
-	if req.QRType != "" {
-		payload["qrType"] = req.QRType
-	}
-	if req.NotificationURL != "" {
-		payload["notificationUrl"] = req.NotificationURL
+	payload := RegisterQRCodeDto{
+		Data: registerQrCodeData{
+			Amount:         req.Amount.Amount,
+			Currency:       req.Amount.Currency,
+			PaymentPurpose: req.PaymentPurpose,
+			QrcType:        qrType,
+			ImageParams: struct {
+				Width     int    `json:"width"`
+				Height    int    `json:"height"`
+				MediaType string `json:"mediaType"`
+			}{
+				Width:     200,
+				Height:    200,
+				MediaType: "image/png",
+			},
+			SourceName:  sourceName,
+			Ttl:         ttl,
+			RedirectUrl: req.RedirectUrl,
+		},
 	}
 
 	body, err := json.Marshal(payload)
@@ -107,17 +137,20 @@ func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) 
 		return RegisterQRCodeResponse{}, fmt.Errorf("marshal request: %w", err)
 	}
 
-	baseURL := strings.TrimRight(c.cfg.BaseURL, "/")
-	endpoint := fmt.Sprintf("%s/qr-code/merchant/%s/account/%s", baseURL, url.PathEscape(c.cfg.MerchantID), url.PathEscape(c.cfg.AccountID))
+	base := strings.TrimRight(c.cfg.BaseURL, "/")
+	endpoint := fmt.Sprintf("%s/uapi/sbp/%s/qr-code/merchant/%s/%s",
+		base,
+		url.PathEscape(c.cfg.APIVersion),
+		url.PathEscape(c.cfg.MerchantID),
+		url.PathEscape(c.cfg.AccountID),
+	)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return RegisterQRCodeResponse{}, fmt.Errorf("build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	httpReq.Header.Set("Idempotency-Key", req.IdempotencyKey)
-	httpReq.Header.Set("X-Idempotency-Key", req.IdempotencyKey)
-	httpReq.Header.Set("X-Request-ID", req.IdempotencyKey)
+	httpReq.Header.Set("Idempotency-Key", req.IdempotencyKey) // оставить один
 	if c.cfg.AccessToken != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.AccessToken)
 	}
@@ -137,31 +170,37 @@ func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) 
 	}
 
 	var parsed struct {
-		QRID          string `json:"qrId"`
-		PaymentLink   string `json:"paymentLink"`
-		Payload       string `json:"payload"`
-		PayloadBase64 string `json:"payloadBase64"`
-		Status        string `json:"status"`
-		ExpiresAt     string `json:"qrExpirationDate"`
+		Data struct {
+			Payload string `json:"payload"`
+			QrcId   string `json:"qrcId"`
+			Image   struct {
+				Width     int    `json:"width"`
+				Height    int    `json:"height"`
+				MediaType string `json:"mediaType"`
+				Content   string `json:"content"`
+			} `json:"image"`
+		} `json:"Data"`
+		Links struct {
+			Self string `json:"self"`
+		} `json:"Links"`
+		Meta struct {
+			TotalPages int `json:"totalPages"`
+		} `json:"Meta"`
 	}
+
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return RegisterQRCodeResponse{}, fmt.Errorf("decode response: %w", err)
 	}
 	var raw map[string]any
 	_ = json.Unmarshal(data, &raw)
 
+	expiresAt := time.Now().Add(time.Second * ttl)
+
 	respData := RegisterQRCodeResponse{
-		QRID:          parsed.QRID,
-		PaymentLink:   parsed.PaymentLink,
-		Payload:       parsed.Payload,
-		PayloadBase64: parsed.PayloadBase64,
-		Status:        parsed.Status,
-		Raw:           raw,
-	}
-	if parsed.ExpiresAt != "" {
-		if ts := parseTime(parsed.ExpiresAt); ts != nil {
-			respData.ExpiresAt = ts
-		}
+		QRID:        parsed.Data.QrcId,
+		PaymentLink: parsed.Data.Payload,
+		Raw:         raw,
+		ExpiresAt:   &expiresAt,
 	}
 	return respData, nil
 }
