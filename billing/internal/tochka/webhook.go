@@ -107,6 +107,9 @@ func (n IncomingPaymentNotification) IdempotencyKey() string {
 	if n.ID != "" {
 		return n.ID
 	}
+	if n.QRID != "" {
+		return n.QRID
+	}
 	return n.OrderID
 }
 

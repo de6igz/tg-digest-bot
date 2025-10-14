@@ -97,7 +97,6 @@ func main() {
 				Description:     req.Description,
 				PaymentPurpose:  req.PaymentPurpose,
 				IdempotencyKey:  req.IdempotencyKey,
-				OrderID:         req.OrderID,
 				QRType:          req.QRType,
 				NotificationURL: req.NotificationURL,
 				Metadata:        req.Metadata,
@@ -147,7 +146,6 @@ type createInvoiceRequest struct {
 	Description     string         `json:"description"`
 	PaymentPurpose  string         `json:"payment_purpose"`
 	IdempotencyKey  string         `json:"idempotency_key"`
-	OrderID         string         `json:"order_id"`
 	QRType          string         `json:"qr_type"`
 	NotificationURL string         `json:"notification_url"`
 	Metadata        map[string]any `json:"metadata"`

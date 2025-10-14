@@ -29,7 +29,6 @@ type CreateInvoiceParams struct {
 	Description     string
 	PaymentPurpose  string
 	IdempotencyKey  string
-	OrderID         string
 	QRType          string
 	NotificationURL string
 	Metadata        map[string]any
@@ -58,11 +57,6 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateInvo
 	if params.NotificationURL == "" {
 		params.NotificationURL = s.defaultNotifyURL
 	}
-	orderID := params.OrderID
-	if orderID == "" {
-		orderID = params.IdempotencyKey
-	}
-
 	existing, err := s.billing.GetInvoiceByIdempotencyKey(ctx, params.IdempotencyKey)
 	if err == nil {
 		sbpMeta, ok := domain.ExtractInvoiceSBPMetadata(existing.Metadata)
@@ -75,7 +69,6 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateInvo
 				Invoice: existing,
 				QR: tochka.RegisterQRCodeResponse{
 					QRID:          sbpMeta.QRID,
-					OrderID:       sbpMeta.OrderID,
 					PaymentLink:   sbpMeta.PaymentLink,
 					Payload:       sbpMeta.Payload,
 					PayloadBase64: sbpMeta.PayloadBase64,
@@ -100,7 +93,6 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateInvo
 	}
 	qrRequest := tochka.RegisterQRCodeRequest{
 		Amount:          params.Amount,
-		OrderID:         orderID,
 		Description:     params.Description,
 		PaymentPurpose:  params.PaymentPurpose,
 		QRType:          params.QRType,
@@ -115,7 +107,6 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateInvo
 
 	sbpMeta := domain.InvoiceSBPMetadata{
 		Provider:      "tochka",
-		OrderID:       orderID,
 		QRID:          qrResponse.QRID,
 		PaymentLink:   qrResponse.PaymentLink,
 		Payload:       qrResponse.Payload,
@@ -162,7 +153,6 @@ func (s *Service) HandleIncomingPayment(ctx context.Context, notification tochka
 	metadata := map[string]any{
 		"provider":        "tochka",
 		"event":           notification.Event,
-		"order_id":        notification.OrderID,
 		"qr_id":           notification.QRID,
 		"status":          notification.Status,
 		"payload":         notification.Payload,
@@ -171,6 +161,9 @@ func (s *Service) HandleIncomingPayment(ctx context.Context, notification tochka
 		"payer_inn":       notification.PayerINN,
 		"payer_account":   notification.PayerAccount,
 		"payer_bank_name": notification.PayerBankName,
+	}
+	if notification.OrderID != "" {
+		metadata["order_id"] = notification.OrderID
 	}
 	metadata["raw"] = notification.Metadata()
 	if notification.PaymentDate != nil {

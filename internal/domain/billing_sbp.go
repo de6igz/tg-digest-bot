@@ -15,7 +15,6 @@ type CreateSBPInvoiceParams struct {
 	Description     string         `json:"description"`
 	PaymentPurpose  string         `json:"payment_purpose"`
 	IdempotencyKey  string         `json:"idempotency_key"`
-	OrderID         string         `json:"order_id"`
 	QRType          string         `json:"qr_type"`
 	NotificationURL string         `json:"notification_url"`
 	Metadata        map[string]any `json:"metadata"`
@@ -29,7 +28,6 @@ type CreateSBPInvoiceResult struct {
 
 type SBPQRCode struct {
 	QRID          string         `json:"qr_id"`
-	OrderID       string         `json:"order_id"`
 	PaymentLink   string         `json:"payment_link,omitempty"`
 	Payload       string         `json:"payload,omitempty"`
 	PayloadBase64 string         `json:"payload_base64,omitempty"`

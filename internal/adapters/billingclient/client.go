@@ -133,7 +133,6 @@ func (c *Client) CreateInvoiceWithQRCode(ctx context.Context, params domain.Crea
 		"description":      params.Description,
 		"payment_purpose":  params.PaymentPurpose,
 		"idempotency_key":  params.IdempotencyKey,
-		"order_id":         params.OrderID,
 		"qr_type":          params.QRType,
 		"notification_url": params.NotificationURL,
 		"metadata":         params.Metadata,

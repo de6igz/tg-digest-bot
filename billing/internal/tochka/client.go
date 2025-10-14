@@ -48,7 +48,6 @@ func (c *Client) SetHTTPClient(httpClient *http.Client) {
 
 type RegisterQRCodeRequest struct {
 	Amount          domain.Money
-	OrderID         string
 	Description     string
 	PaymentPurpose  string
 	QRType          string
@@ -59,7 +58,6 @@ type RegisterQRCodeRequest struct {
 
 type RegisterQRCodeResponse struct {
 	QRID          string         `json:"qr_id"`
-	OrderID       string         `json:"order_id"`
 	PaymentLink   string         `json:"payment_link,omitempty"`
 	Payload       string         `json:"payload,omitempty"`
 	PayloadBase64 string         `json:"payload_base64,omitempty"`
@@ -75,10 +73,6 @@ func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) 
 	if c.httpClient == nil {
 		return RegisterQRCodeResponse{}, fmt.Errorf("http client is not configured")
 	}
-	orderID := req.OrderID
-	if orderID == "" {
-		orderID = req.IdempotencyKey
-	}
 	currency := req.Amount.Currency
 	if currency == "" {
 		currency = "RUB"
@@ -89,18 +83,14 @@ func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) 
 		payload[k] = v
 	}
 
-	if _, ok := payload["order"]; !ok {
-		orderPayload := map[string]any{
-			"orderId": orderID,
-		}
-		if req.Description != "" {
-			orderPayload["description"] = req.Description
-		}
-		orderPayload["amount"] = map[string]any{
+	if _, ok := payload["amount"]; !ok {
+		payload["amount"] = map[string]any{
 			"value":    formatMinorAmount(req.Amount.Amount),
 			"currency": currency,
 		}
-		payload["order"] = orderPayload
+	}
+	if req.Description != "" {
+		payload["description"] = req.Description
 	}
 	if req.PaymentPurpose != "" {
 		payload["paymentPurpose"] = req.PaymentPurpose
@@ -148,7 +138,6 @@ func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) 
 
 	var parsed struct {
 		QRID          string `json:"qrId"`
-		OrderID       string `json:"orderId"`
 		PaymentLink   string `json:"paymentLink"`
 		Payload       string `json:"payload"`
 		PayloadBase64 string `json:"payloadBase64"`
@@ -163,15 +152,11 @@ func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) 
 
 	respData := RegisterQRCodeResponse{
 		QRID:          parsed.QRID,
-		OrderID:       parsed.OrderID,
 		PaymentLink:   parsed.PaymentLink,
 		Payload:       parsed.Payload,
 		PayloadBase64: parsed.PayloadBase64,
 		Status:        parsed.Status,
 		Raw:           raw,
-	}
-	if respData.OrderID == "" {
-		respData.OrderID = orderID
 	}
 	if parsed.ExpiresAt != "" {
 		if ts := parseTime(parsed.ExpiresAt); ts != nil {

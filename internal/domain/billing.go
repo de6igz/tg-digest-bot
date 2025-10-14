@@ -50,7 +50,6 @@ type Invoice struct {
 // InvoiceSBPMetadata хранит информацию о QR-коде СБП, связанной со счётом.
 type InvoiceSBPMetadata struct {
 	Provider      string         `json:"provider"`
-	OrderID       string         `json:"order_id"`
 	QRID          string         `json:"qr_id,omitempty"`
 	PaymentLink   string         `json:"payment_link,omitempty"`
 	Payload       string         `json:"payload,omitempty"`
