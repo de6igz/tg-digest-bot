@@ -114,7 +114,7 @@ RETURNING id, account_id, amount, currency, description, metadata, status, idemp
 		return domain.Invoice{}, err
 	}
 
-	invoice, err := p.GetInvoiceByIdempotencyKey(ctx, params.IdempotencyKey)
+	invoice, err = p.GetInvoiceByIdempotencyKey(ctx, params.IdempotencyKey)
 	if err != nil {
 		return domain.Invoice{}, err
 	}

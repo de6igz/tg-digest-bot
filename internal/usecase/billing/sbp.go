@@ -140,10 +140,10 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateSBPI
 }
 
 func (s *Service) HandleIncomingPayment(ctx context.Context, notification tochka.IncomingPaymentNotification) (domain.Payment, error) {
-	if notification.OrderID == "" {
-		return domain.Payment{}, fmt.Errorf("webhook missing order id")
+	if notification.QRID == "" {
+		return domain.Payment{}, fmt.Errorf("webhook missing qr id")
 	}
-	invoice, err := s.billing.GetInvoiceByIdempotencyKey(ctx, notification.OrderID)
+	invoice, err := s.billing.GetInvoiceByIdempotencyKey(ctx, notification.QRID)
 	if err != nil {
 		return domain.Payment{}, fmt.Errorf("invoice lookup: %w", err)
 	}

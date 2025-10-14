@@ -150,12 +150,16 @@ func main() {
 			writeError(w, http.StatusBadRequest, "failed to read body")
 			return
 		}
-		var notification tochka.IncomingPaymentNotification
-		if webhookPublicKey != nil {
-			notification, err = tochka.ParseIncomingPaymentNotificationJWT(body, webhookPublicKey)
-		} else {
-			notification, err = tochka.ParseIncomingPaymentNotification(body)
+		notification, err := tochka.ParseSbpWebhook(body, webhookPublicKey)
+		if err != nil {
+			if errors.Is(err, tochka.ErrInvalidWebhookSignature) {
+				writeError(w, http.StatusUnauthorized, "invalid webhook signature")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "invalid webhook payload")
+			return
 		}
+
 		if err != nil {
 			if errors.Is(err, tochka.ErrInvalidWebhookSignature) {
 				writeError(w, http.StatusUnauthorized, "invalid webhook signature")
@@ -180,7 +184,7 @@ func main() {
 		})
 	})
 
-	srv := &http.Server{Addr: ":8080", Handler: r}
+	srv := &http.Server{Addr: ":8081", Handler: r}
 	metrics.StartServer(ctx, log.With().Str("component", "metrics").Logger(), ":9090")
 	go func() {
 		log.Info().Msg("api: старт")

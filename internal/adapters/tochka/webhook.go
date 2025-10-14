@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 )
 
 type Amount struct {
@@ -14,23 +13,23 @@ type Amount struct {
 	Currency string
 }
 
-type IncomingPaymentNotification struct {
-	Event          string
-	ID             string
-	OrderID        string
-	PaymentID      string
-	QRID           string
-	Status         string
-	PaymentPurpose string
-	PaymentDate    *time.Time
-	Amount         Amount
-	PayerName      string
-	PayerINN       string
-	PayerAccount   string
-	PayerBankName  string
-	Payload        map[string]any
-	Raw            map[string]any
-}
+//type IncomingPaymentNotification struct {
+//	Event          string
+//	ID             string
+//	OrderID        string
+//	PaymentID      string
+//	QRID           string
+//	Status         string
+//	PaymentPurpose string
+//	PaymentDate    *time.Time
+//	Amount         Amount
+//	PayerName      string
+//	PayerINN       string
+//	PayerAccount   string
+//	PayerBankName  string
+//	Payload        map[string]any
+//	Raw            map[string]any
+//}
 
 func ParseIncomingPaymentNotification(data []byte) (IncomingPaymentNotification, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
