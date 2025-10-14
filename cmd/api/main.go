@@ -57,76 +57,79 @@ func main() {
 	sbpService := billingusecase.NewService(repoAdapter, tochkaClient, log.With().Str("component", "billing_sbp").Logger())
 
 	r := chi.NewRouter()
-	r.Use(httpinfra.WebAppAuthMiddleware(cfg.Telegram.Token))
 
-	r.Get("/api/v1/digest/today", func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]any{
-			"date":  time.Now().Format("2006-01-02"),
-			"items": []map[string]string{},
-		}
-		writeJSON(w, resp)
-	})
+	r.Group(func(protected chi.Router) {
+		protected.Use(httpinfra.WebAppAuthMiddleware(cfg.Telegram.Token))
 
-	r.Get("/api/v1/digest/history", func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]any{"history": []any{}}
-		writeJSON(w, resp)
-	})
+		protected.Get("/api/v1/digest/today", func(w http.ResponseWriter, r *http.Request) {
+			resp := map[string]any{
+				"date":  time.Now().Format("2006-01-02"),
+				"items": []map[string]string{},
+			}
+			writeJSON(w, resp)
+		})
 
-	r.Get("/api/v1/channels", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, []any{})
-	})
+		protected.Get("/api/v1/digest/history", func(w http.ResponseWriter, r *http.Request) {
+			resp := map[string]any{"history": []any{}}
+			writeJSON(w, resp)
+		})
 
-	r.Post("/api/v1/channels", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]string{"status": "ok"})
-	})
+		protected.Get("/api/v1/channels", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, []any{})
+		})
 
-	r.Delete("/api/v1/channels/{id}", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
+		protected.Post("/api/v1/channels", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]string{"status": "ok"})
+		})
 
-	r.Put("/api/v1/settings/time", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]string{"status": "ok"})
-	})
+		protected.Delete("/api/v1/channels/{id}", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
 
-	r.Post("/api/v1/billing/sbp/invoices", func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		var req createInvoiceRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid request body")
-			return
-		}
-		if req.UserID == 0 {
-			writeError(w, http.StatusBadRequest, "user_id is required")
-			return
-		}
-		if req.AmountMinor <= 0 {
-			writeError(w, http.StatusBadRequest, "amount_minor must be positive")
-			return
-		}
-		params := billingusecase.CreateSBPInvoiceParams{
-			UserID:          req.UserID,
-			Amount:          domain.Money{Amount: req.AmountMinor, Currency: req.Currency},
-			Description:     req.Description,
-			PaymentPurpose:  req.PaymentPurpose,
-			IdempotencyKey:  req.IdempotencyKey,
-			OrderID:         req.OrderID,
-			QRType:          req.QRType,
-			NotificationURL: req.NotificationURL,
-			Metadata:        req.Metadata,
-			Extra:           req.Extra,
-		}
-		if params.NotificationURL == "" {
-			params.NotificationURL = cfg.Tochka.NotificationURL
-		}
-		result, err := sbpService.CreateInvoiceWithQRCode(r.Context(), params)
-		if err != nil {
-			log.Error().Err(err).Msg("billing: create sbp invoice")
-			writeError(w, http.StatusInternalServerError, "failed to create invoice")
-			return
-		}
-		writeJSON(w, map[string]any{
-			"invoice": result.Invoice,
-			"qr":      result.QR,
+		protected.Put("/api/v1/settings/time", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, map[string]string{"status": "ok"})
+		})
+
+		protected.Post("/api/v1/billing/sbp/invoices", func(w http.ResponseWriter, r *http.Request) {
+			defer r.Body.Close()
+			var req createInvoiceRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+			if req.UserID == 0 {
+				writeError(w, http.StatusBadRequest, "user_id is required")
+				return
+			}
+			if req.AmountMinor <= 0 {
+				writeError(w, http.StatusBadRequest, "amount_minor must be positive")
+				return
+			}
+			params := billingusecase.CreateSBPInvoiceParams{
+				UserID:          req.UserID,
+				Amount:          domain.Money{Amount: req.AmountMinor, Currency: req.Currency},
+				Description:     req.Description,
+				PaymentPurpose:  req.PaymentPurpose,
+				IdempotencyKey:  req.IdempotencyKey,
+				OrderID:         req.OrderID,
+				QRType:          req.QRType,
+				NotificationURL: req.NotificationURL,
+				Metadata:        req.Metadata,
+				Extra:           req.Extra,
+			}
+			if params.NotificationURL == "" {
+				params.NotificationURL = cfg.Tochka.NotificationURL
+			}
+			result, err := sbpService.CreateInvoiceWithQRCode(r.Context(), params)
+			if err != nil {
+				log.Error().Err(err).Msg("billing: create sbp invoice")
+				writeError(w, http.StatusInternalServerError, "failed to create invoice")
+				return
+			}
+			writeJSON(w, map[string]any{
+				"invoice": result.Invoice,
+				"qr":      result.QR,
+			})
 		})
 	})
 
