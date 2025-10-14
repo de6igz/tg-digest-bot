@@ -9,7 +9,7 @@ import (
 
 type Config struct {
 	Port  int    `envconfig:"PORT" default:"8082"`
-	PGDSN string `envconfig:"PG_DSN"`
+	PGDSN string `envconfig:"BILLING_PG_DSN"`
 
 	Server struct {
 		ShutdownTimeout time.Duration `envconfig:"SERVER_SHUTDOWN_TIMEOUT" default:"5s"`

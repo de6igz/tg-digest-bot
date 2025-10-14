@@ -1,78 +1,78 @@
-# Billing Service Business Logic
+# Бизнес-логика сервиса биллинга
 
-This document provides a system-level overview of the standalone billing service so that analysts and engineers can understand its responsibilities, data model, and integration points.
+Документ описывает автономный сервис биллинга на уровне системы: его ответственность, модель данных, интеграции и правила взаимодействия с другими компонентами.
 
-## High-level responsibilities
+## Основные обязанности
 
-The billing service owns all user balance, invoice, and payment records. It exposes an HTTP API that other components (the bot gateway and public API) call for account operations and SBP (Faster Payments System) invoicing. The service also integrates with Tochka Bank to generate SBP QR codes and process SBP webhooks, without requiring any knowledge of the tg-digest bot internals.【F:billing/cmd/billing/main.go†L17-L80】【F:billing/internal/http/server.go†L48-L109】
+Сервис биллинга владеет балансами пользователей, счетами и платежами. Он предоставляет HTTP API, к которому обращаются bot-gateway и публичное API, а также интегрируется с банком Точка для генерации SBP QR-кодов и приёма вебхуков. Внутри сервиса нет зависимостей от tg-digest-bot, взаимодействие происходит исключительно через его API.【F:billing/cmd/billing/main.go†L17-L80】【F:billing/internal/http/server.go†L48-L109】
 
-## Domain model
+## Доменные модели
 
-The core domain types are shared between the billing service and its clients:
+Ядро домена разделяется между сервисом биллинга и его клиентами:
 
-- **Money** keeps an amount in minor units plus a currency code. Currencies default to RUB when Tochka or the storage layer do not provide one explicitly.【F:billing/internal/domain/billing.go†L16-L44】【F:billing/internal/storage/postgres.go†L17-L70】
-- **BillingAccount** represents a user’s balance. Accounts are created lazily per user and store the current balance, timestamps, and currency.【F:billing/internal/domain/billing.go†L18-L33】【F:billing/internal/storage/postgres.go†L26-L70】
-- **Invoice** captures an amount to be paid, optional description/metadata, current status, and idempotency key. Metadata can embed SBP-specific data about the QR code that was issued.【F:billing/internal/domain/billing.go†L35-L70】【F:billing/internal/domain/billing.go†L72-L95】
-- **Payment** records both incoming and outgoing balance movements, including optional linkage to an invoice, metadata, and completion timestamps.【F:billing/internal/domain/billing.go†L97-L125】
-- **InvoiceSBPMetadata** stores Tochka QR code details (QR ID, payment link, payloads, expiry, and provider data) in the invoice metadata block so a subsequent call can return the previously issued QR code instead of contacting Tochka again.【F:billing/internal/domain/billing.go†L72-L95】【F:billing/internal/usecase/sbp/service.go†L39-L90】
+- **Money** хранит сумму в минорных единицах и код валюты. При отсутствии значения в ответах Точки или базе данных валюта нормализуется в RUB.【F:billing/internal/domain/billing.go†L16-L44】【F:billing/internal/storage/postgres.go†L17-L70】
+- **BillingAccount** описывает баланс пользователя. Аккаунт создаётся лениво для каждого пользователя и содержит текущий баланс, временные метки и валюту.【F:billing/internal/domain/billing.go†L18-L33】【F:billing/internal/storage/postgres.go†L26-L70】
+- **Invoice** фиксирует счёт к оплате: сумму, описание и/или метаданные, статус и идемпотентный ключ. В метаданные может быть вложена информация о SBP QR-коде.【F:billing/internal/domain/billing.go†L35-L95】
+- **Payment** отражает входящие и исходящие движения по счёту с привязкой к счёту/инвойсу, метаданными и временем завершения.【F:billing/internal/domain/billing.go†L97-L125】
+- **InvoiceSBPMetadata** хранит данные QR-кода Точки (qrId, платёжную ссылку, payload, срок действия и провайдерские атрибуты) внутри счёта, чтобы переиспользовать уже выданный код без повторного обращения к Точке.【F:billing/internal/domain/billing.go†L72-L95】【F:billing/internal/usecase/sbp/service.go†L39-L90】
 
-Every write operation accepts an idempotency key; storage enforces uniqueness and returns an existing record when the same key is replayed. This guarantees that retries from clients or webhook deliveries do not create duplicates.【F:billing/internal/storage/postgres.go†L72-L184】【F:billing/internal/storage/postgres.go†L200-L333】
+Все операции записи принимают идемпотентный ключ; хранилище гарантирует уникальность и при повторе возвращает существующую запись. Это защищает от дублей при повторных запросах или повторной доставке вебхуков.【F:billing/internal/storage/postgres.go†L72-L184】【F:billing/internal/storage/postgres.go†L200-L333】
 
-## Storage logic
+## Хранилище и отдельная база данных
 
-The Postgres adapter encapsulates all persistence rules and invariants:
+Сервис использует собственную базу данных Postgres, DSN которой передаётся через переменную окружения `BILLING_PG_DSN`. Она не разделяется с основным приложением и содержит только таблицы биллинга. Все инварианты инкапсулированы в адаптере Postgres, что позволяет остальным сервисам не иметь прямого доступа к базе.【F:billing/internal/config/config.go†L10-L34】【F:billing/cmd/billing/main.go†L21-L57】
 
-- `EnsureAccount` opens a transaction that upserts an account by user ID and normalises the currency if the database row is missing a value.【F:billing/internal/storage/postgres.go†L26-L80】
-- `CreateInvoice` verifies the account exists, enforces consistent currencies, serialises metadata, and inserts a new invoice. On idempotency conflicts it re-reads the existing invoice and validates that the repeated request matches the stored one.【F:billing/internal/storage/postgres.go†L82-L164】
-- `RegisterIncomingPayment` locks the account (and invoice if supplied), validates currencies, inserts a completed payment, increases the balance, and marks the invoice as paid once the full amount arrives. Partial payments are rejected to avoid inconsistent invoice state.【F:billing/internal/storage/postgres.go†L166-L289】
-- `ChargeAccount` performs the inverse operation: it ensures sufficient balance, inserts a negative completed payment, and decrements the account balance atomically.【F:billing/internal/storage/postgres.go†L291-L372】
+Основные операции хранилища:
 
-These invariants let upstream services treat the billing API as the source of truth without sharing a database connection.
+- `EnsureAccount` открывает транзакцию, создаёт или обновляет аккаунт по user_id и нормализует валюту, если в строке базы она отсутствует.【F:billing/internal/storage/postgres.go†L26-L80】
+- `CreateInvoice` проверяет существование аккаунта, согласованность валюты, сериализует метаданные и вставляет новый инвойс. При конфликте идемпотентности перечитывает запись и сравнивает параметры запроса.【F:billing/internal/storage/postgres.go†L82-L164】
+- `RegisterIncomingPayment` блокирует аккаунт (и инвойс, если он указан), проверяет валюту, создаёт завершённый платёж, увеличивает баланс и помечает счёт оплаченным при поступлении полной суммы. Частичные платежи отвергаются.【F:billing/internal/storage/postgres.go†L166-L289】
+- `ChargeAccount` выполняет обратную операцию: проверяет достаточность баланса, вставляет отрицательный платёж и атомарно уменьшает баланс аккаунта.【F:billing/internal/storage/postgres.go†L291-L372】
 
-## HTTP API surface
+Благодаря этим правилам клиенты воспринимают API биллинга как единственный источник истины без совместного подключения к БД.
 
-The HTTP server exposes REST-like endpoints for each domain operation. Key routes include:
+## HTTP API
 
-- `POST /api/v1/accounts/ensure` and `GET /api/v1/accounts/by-user/{id}` for account provisioning and lookup.【F:billing/internal/http/server.go†L57-L138】
-- `POST /api/v1/accounts/charge` to debit an account idempotently; validation propagates business errors such as insufficient funds via structured error responses.【F:billing/internal/http/server.go†L112-L182】
-- `POST /api/v1/invoices` plus `GET /api/v1/invoices/{id}` and `/api/v1/invoices/idempotency/{key}` for invoice creation and retrieval.【F:billing/internal/http/server.go†L184-L236】
-- `POST /api/v1/payments/incoming` for internal systems to register non-SBP incoming payments (for example, manual top-ups).【F:billing/internal/http/server.go†L238-L272】
-- `POST /api/v1/sbp/invoices` to request a Tochka SBP QR code and persist the linked invoice, and `POST /api/v1/sbp/webhook` for Tochka callbacks. These endpoints are available only when Tochka credentials are configured.【F:billing/internal/http/server.go†L274-L347】【F:billing/internal/http/server.go†L349-L406】
+HTTP-сервер предоставляет REST-подобные эндпоинты для доменных операций. Основные маршруты:
 
-Each handler validates required fields, translates domain errors into HTTP status codes, and serialises domain objects back to callers, ensuring downstream services receive consistent JSON schemas.【F:billing/internal/http/server.go†L57-L406】
+- `POST /api/v1/accounts/ensure` и `GET /api/v1/accounts/by-user/{id}` для создания и получения аккаунтов.【F:billing/internal/http/server.go†L57-L138】
+- `POST /api/v1/accounts/charge` для идемпотентного списания; бизнес-ошибки (например, недостаточно средств) возвращаются в структурированном виде.【F:billing/internal/http/server.go†L112-L182】
+- `POST /api/v1/invoices`, `GET /api/v1/invoices/{id}` и `/api/v1/invoices/idempotency/{key}` для создания и чтения счётов.【F:billing/internal/http/server.go†L184-L236】
+- `POST /api/v1/payments/incoming` для регистрации не-SBP пополнений (например, ручных).【F:billing/internal/http/server.go†L238-L272】
+- `POST /api/v1/sbp/invoices` для запроса SBP QR-кода в банке Точка и `POST /api/v1/sbp/webhook` для обработки входящих вебхуков. Эти маршруты доступны только при настроенных креденшлах Точки.【F:billing/internal/http/server.go†L274-L347】【F:billing/internal/http/server.go†L349-L406】
 
-## SBP invoice issuance flow
+Каждый хендлер валидирует входные данные, мапит доменные ошибки в HTTP-статусы и сериализует доменные сущности обратно в JSON, обеспечивая консистентный контракт для потребителей.【F:billing/internal/http/server.go†L57-L406】
 
-When a client calls `POST /api/v1/sbp/invoices` the server delegates to the SBP use case:
+## Процесс выпуска SBP-счёта
 
-1. Validate the payload (user, amount, idempotency key) and fill defaults such as the notification URL if Tochka credentials specify one.【F:billing/internal/http/server.go†L274-L336】【F:billing/internal/usecase/sbp/service.go†L34-L67】
-2. Check whether an invoice already exists for the idempotency key; if so, extract the cached Tochka QR metadata and return it immediately without making an external API call.【F:billing/internal/usecase/sbp/service.go†L48-L80】
-3. Ensure the user has a billing account, normalise the currency, and build a Tochka QR registration request. Because Tochka’s SBP API does not accept an `order_id`, the payload carries only the amount, description, payment purpose, QR type, webhook URL, and any extra fields supplied by the caller.【F:billing/internal/usecase/sbp/service.go†L82-L114】【F:billing/internal/tochka/client.go†L40-L120】
-4. Call Tochka, parse the QR ID, payment link, payload strings, status, and expiry timestamp, and stash the full provider response in invoice metadata so retries are idempotent.【F:billing/internal/tochka/client.go†L122-L196】【F:billing/internal/usecase/sbp/service.go†L116-L142】
-5. Create the invoice in Postgres with the SBP metadata attached and return both the invoice and the QR data to the caller.【F:billing/internal/usecase/sbp/service.go†L138-L157】
+При вызове `POST /api/v1/sbp/invoices` сервер делегирует работу use case’у SBP:
 
-The stored metadata (including the Tochka `qrId`) allows the billing service to correlate subsequent webhooks with the correct invoice, even though Tochka does not provide an `order_id` field in either the registration response or webhook payload.【F:billing/internal/usecase/sbp/service.go†L48-L157】【F:billing/internal/tochka/webhook.go†L34-L116】
+1. Провалидировать запрос (пользователь, сумма, идемпотентный ключ) и проставить дефолты, например URL уведомлений из конфигурации Точки.【F:billing/internal/http/server.go†L274-L336】【F:billing/internal/usecase/sbp/service.go†L34-L67】
+2. Проверить наличие инвойса по идемпотентному ключу и, если он есть, вернуть сохранённые метаданные Точки без повторного обращения во внешний API.【F:billing/internal/usecase/sbp/service.go†L48-L80】
+3. Убедиться в наличии аккаунта пользователя, нормализовать валюту и подготовить запрос регистрации QR-кода. Так как API Точки не принимает `order_id`, передаются только сумма, описание, назначение платежа, тип QR, URL вебхука и дополнительные поля клиента.【F:billing/internal/usecase/sbp/service.go†L82-L114】【F:billing/internal/tochka/client.go†L40-L120】
+4. Вызвать Точку, распарсить `qrId`, платёжную ссылку, payload’ы, статус и срок действия, а затем сохранить полный ответ провайдера в метаданные счёта для идемпотентности повторов.【F:billing/internal/tochka/client.go†L122-L196】【F:billing/internal/usecase/sbp/service.go†L116-L142】
+5. Создать инвойс в Postgres с привязанными SBP-данными и вернуть его вместе с QR-кодом клиенту.【F:billing/internal/usecase/sbp/service.go†L138-L157】
 
-## SBP webhook processing
+Хранимые метаданные (включая `qrId`) позволяют связать будущий вебхук с нужным счётом, несмотря на отсутствие `order_id` в ответах регистрации и уведомлениях Точки.【F:billing/internal/usecase/sbp/service.go†L48-L157】【F:billing/internal/tochka/webhook.go†L34-L116】
 
-The webhook handler enforces the configured shared secret or JWT signature (when Tochka sends signed notifications), parses the body into a normalised notification structure, and hands it to the use case for settlement.【F:billing/internal/http/server.go†L349-L406】【F:billing/internal/tochka/jwt.go†L19-L170】
+## Обработка SBP-вебхуков
 
-The SBP use case performs the following steps:
+Хендлер вебхука проверяет настроенный shared secret или JWT-подпись (если Точка подписывает уведомления), парсит тело в нормализованный формат и передаёт его в use case для проведения платежа.【F:billing/internal/http/server.go†L349-L406】【F:billing/internal/tochka/jwt.go†L19-L170】
 
-1. Require a `qrId` because it uniquely maps back to the stored invoice idempotency key; webhooks without it are rejected.【F:billing/internal/usecase/sbp/service.go†L146-L152】
-2. Look up the invoice by the QR ID idempotency key and convert the amount into minor units using Tochka helpers.【F:billing/internal/usecase/sbp/service.go†L152-L166】【F:billing/internal/tochka/webhook.go†L96-L116】
-3. Build payment metadata describing the Tochka event (status, payment purpose, payer information, raw payload) and register the incoming payment through the billing repository. The metadata only includes `order_id` if Tochka happens to send it, keeping compatibility with payloads that omit the field.【F:billing/internal/usecase/sbp/service.go†L166-L201】
-4. The storage layer credits the account balance, marks the invoice as paid when the amounts match, and returns the completed payment.【F:billing/internal/storage/postgres.go†L166-L289】
+Use case выполняет следующие шаги:
 
-Idempotency keys for webhook payments fall back to the Tochka payment ID or event ID, with the QR ID as a final fallback. This ensures the service can safely handle duplicate webhook deliveries without generating multiple payments even when Tochka omits optional identifiers.【F:billing/internal/tochka/webhook.go†L96-L116】
+1. Требует наличие `qrId`, который однозначно сопоставляет вебхук с идемпотентным ключом счёта; без него уведомление отвергается.【F:billing/internal/usecase/sbp/service.go†L146-L152】
+2. Ищет инвойс по `qrId` и конвертирует сумму в минорные единицы с помощью вспомогательных функций Точки.【F:billing/internal/usecase/sbp/service.go†L152-L166】【F:billing/internal/tochka/webhook.go†L96-L116】
+3. Формирует метаданные платежа (статус, назначение, данные плательщика, сырое тело) и регистрирует входящий платёж через репозиторий. Поле `order_id` добавляется только если пришло от Точки, поддерживая кейсы без него.【F:billing/internal/usecase/sbp/service.go†L166-L201】
+4. Хранилище зачисляет баланс, помечает счёт оплаченным при совпадении суммы и возвращает завершённый платёж.【F:billing/internal/storage/postgres.go†L166-L289】
 
-## Sequence summary
+Идемпотентные ключи для платежей строятся на основе идентификаторов из вебхука: в первую очередь используется Tochka payment ID, далее event ID, и `qrId` как последний fallback. Это гарантирует защиту от дублей даже при отсутствии необязательных полей в уведомлениях.【F:billing/internal/tochka/webhook.go†L96-L116】
 
-Putting the pieces together:
+## Сводная последовательность
 
-1. A client ensures the user has a billing account and requests an SBP invoice via the billing API.
-2. The billing service talks to Tochka to issue a QR code, persists the invoice with Tochka metadata, and returns the QR payload to the client.
-3. The user pays by scanning the QR code; Tochka notifies the billing webhook.
-4. The webhook is validated, normalised, and registered as an incoming payment, which in turn credits the user account and marks the invoice as paid.
+1. Клиент убеждается, что у пользователя есть аккаунт, и запрашивает SBP-инвойс через API биллинга.
+2. Сервис обращается к Точке за QR-кодом, сохраняет инвойс с SBP-метаданными и возвращает данные клиенту.
+3. Пользователь оплачивает счёт по QR-коду; Точка отправляет вебхук в сервис биллинга.
+4. Вебхук валидируется, нормализуется и регистрируется как входящий платёж, что зачисляет средства и помечает счёт оплаченным.
 
-Through strict idempotency and metadata storage the billing service can recover from retries at any step without inconsistencies, while also hiding Tochka-specific details from other parts of the system.【F:billing/internal/usecase/sbp/service.go†L34-L201】【F:billing/internal/storage/postgres.go†L72-L372】
+Благодаря строгой идемпотентности и хранению метаданных сервис устойчив к повторным запросам на каждом шаге и изолирует детали интеграции с Точкой от остальных компонентов системы.【F:billing/internal/usecase/sbp/service.go†L34-L201】【F:billing/internal/storage/postgres.go†L72-L372】

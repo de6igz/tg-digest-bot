@@ -26,7 +26,7 @@ func main() {
 	setupLogger()
 
 	if cfg.PGDSN == "" {
-		log.Fatal().Msg("billing: PG_DSN is required")
+		log.Fatal().Msg("billing: BILLING_PG_DSN is required")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
