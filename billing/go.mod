@@ -3,10 +3,10 @@ module billing
 go 1.24.7
 
 require (
-	github.com/go-chi/chi/v5 v5.2.3
-	github.com/jackc/pgx/v5 v5.7.6
-	github.com/kelseyhightower/envconfig v1.4.0
-	github.com/rs/zerolog v1.34.0
+        github.com/jackc/pgx/v5 v5.7.6
+        github.com/kelseyhightower/envconfig v1.4.0
+        github.com/labstack/echo/v4 v4.12.0
+        github.com/rs/zerolog v1.34.0
 )
 
 require (
@@ -20,5 +20,7 @@ require (
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.41.0 // indirect
-	golang.org/x/sys v0.35.0 // indirect
+        golang.org/x/sys v0.35.0 // indirect
 )
+
+replace github.com/labstack/echo/v4 => ../third_party/github.com/labstack/echo/v4
