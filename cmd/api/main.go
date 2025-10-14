@@ -2,10 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/rsa"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"os/signal"
 	"syscall"
@@ -16,12 +13,10 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"tg-digest-bot/internal/adapters/billingclient"
-	"tg-digest-bot/internal/adapters/tochka"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/config"
 	httpinfra "tg-digest-bot/internal/infra/http"
 	"tg-digest-bot/internal/infra/metrics"
-	billingusecase "tg-digest-bot/internal/usecase/billing"
 )
 
 func main() {
@@ -42,24 +37,9 @@ func main() {
 	} else {
 		log.Warn().Msg("api: billing base URL is not configured, billing endpoints disabled")
 	}
-	tochkaClient := tochka.NewClient(tochka.Config{
-		BaseURL:     cfg.Tochka.BaseURL,
-		MerchantID:  cfg.Tochka.MerchantID,
-		AccountID:   cfg.Tochka.AccountID,
-		AccessToken: cfg.Tochka.AccessToken,
-		Timeout:     cfg.Tochka.Timeout,
-	})
-	var webhookPublicKey *rsa.PublicKey
-	if cfg.Tochka.WebhookKey != "" {
-		key, err := tochka.ParseRSAPublicKeyFromJWK([]byte(cfg.Tochka.WebhookKey))
-		if err != nil {
-			log.Fatal().Err(err).Msg("api: invalid tochka webhook public key")
-		}
-		webhookPublicKey = key
-	}
-	var sbpService *billingusecase.Service
-	if billingAdapter != nil {
-		sbpService = billingusecase.NewService(billingAdapter, tochkaClient, log.With().Str("component", "billing_sbp").Logger())
+	var sbpClient domain.BillingSBP
+	if b, ok := billingAdapter.(domain.BillingSBP); ok {
+		sbpClient = b
 	}
 
 	r := chi.NewRouter()
@@ -111,7 +91,7 @@ func main() {
 				writeError(w, http.StatusBadRequest, "amount_minor must be positive")
 				return
 			}
-			params := billingusecase.CreateSBPInvoiceParams{
+			params := domain.CreateSBPInvoiceParams{
 				UserID:          req.UserID,
 				Amount:          domain.Money{Amount: req.AmountMinor, Currency: req.Currency},
 				Description:     req.Description,
@@ -123,14 +103,11 @@ func main() {
 				Metadata:        req.Metadata,
 				Extra:           req.Extra,
 			}
-			if params.NotificationURL == "" {
-				params.NotificationURL = cfg.Tochka.NotificationURL
-			}
-			if sbpService == nil {
+			if sbpClient == nil {
 				writeError(w, http.StatusServiceUnavailable, "billing is not available")
 				return
 			}
-			result, err := sbpService.CreateInvoiceWithQRCode(r.Context(), params)
+			result, err := sbpClient.CreateInvoiceWithQRCode(r.Context(), params)
 			if err != nil {
 				log.Error().Err(err).Msg("billing: create sbp invoice")
 				writeError(w, http.StatusInternalServerError, "failed to create invoice")
@@ -140,61 +117,6 @@ func main() {
 				"invoice": result.Invoice,
 				"qr":      result.QR,
 			})
-		})
-	})
-
-	r.Post("/api/v1/billing/sbp/webhook", func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		if cfg.Tochka.WebhookSecret != "" {
-			secret := r.Header.Get("X-Webhook-Secret")
-			if secret == "" {
-				secret = r.URL.Query().Get("token")
-			}
-			if secret != cfg.Tochka.WebhookSecret {
-				writeError(w, http.StatusUnauthorized, "invalid webhook secret")
-				return
-			}
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "failed to read body")
-			return
-		}
-		notification, err := tochka.ParseSbpWebhook(body, webhookPublicKey)
-		if err != nil {
-			if errors.Is(err, tochka.ErrInvalidWebhookSignature) {
-				writeError(w, http.StatusUnauthorized, "invalid webhook signature")
-				return
-			}
-			writeError(w, http.StatusBadRequest, "invalid webhook payload")
-			return
-		}
-
-		if err != nil {
-			if errors.Is(err, tochka.ErrInvalidWebhookSignature) {
-				writeError(w, http.StatusUnauthorized, "invalid webhook signature")
-				return
-			}
-			writeError(w, http.StatusBadRequest, "invalid webhook payload")
-			return
-		}
-		if sbpService == nil {
-			writeError(w, http.StatusServiceUnavailable, "billing is not available")
-			return
-		}
-		payment, err := sbpService.HandleIncomingPayment(r.Context(), notification)
-		if err != nil {
-			if errors.Is(err, domain.ErrInvoiceNotFound) {
-				writeError(w, http.StatusNotFound, "invoice not found")
-				return
-			}
-			log.Error().Err(err).Msg("billing: handle sbp webhook")
-			writeError(w, http.StatusInternalServerError, "failed to register payment")
-			return
-		}
-		writeJSON(w, map[string]any{
-			"status":     "ok",
-			"payment_id": payment.ID,
 		})
 	})
 

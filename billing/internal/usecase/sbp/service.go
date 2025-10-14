@@ -1,4 +1,4 @@
-package billing
+package sbp
 
 import (
 	"context"
@@ -8,21 +8,22 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
-	"tg-digest-bot/internal/adapters/tochka"
-	"tg-digest-bot/internal/domain"
+	"billing/internal/domain"
+	"billing/internal/tochka"
 )
 
-type SBPClient interface {
+type Client interface {
 	RegisterQRCode(ctx context.Context, req tochka.RegisterQRCodeRequest) (tochka.RegisterQRCodeResponse, error)
 }
 
 type Service struct {
-	billing domain.Billing
-	client  SBPClient
-	log     zerolog.Logger
+	billing          domain.Billing
+	client           Client
+	defaultNotifyURL string
+	log              zerolog.Logger
 }
 
-type CreateSBPInvoiceParams struct {
+type CreateInvoiceParams struct {
 	UserID          int64
 	Amount          domain.Money
 	Description     string
@@ -35,24 +36,27 @@ type CreateSBPInvoiceParams struct {
 	Extra           map[string]any
 }
 
-type CreateSBPInvoiceResult struct {
+type CreateInvoiceResult struct {
 	Invoice domain.Invoice
 	QR      tochka.RegisterQRCodeResponse
 }
 
-func NewService(b domain.Billing, client SBPClient, log zerolog.Logger) *Service {
-	return &Service{billing: b, client: client, log: log}
+func NewService(b domain.Billing, client Client, notificationURL string, log zerolog.Logger) *Service {
+	return &Service{billing: b, client: client, defaultNotifyURL: notificationURL, log: log}
 }
 
-func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateSBPInvoiceParams) (CreateSBPInvoiceResult, error) {
+func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateInvoiceParams) (CreateInvoiceResult, error) {
 	if params.UserID == 0 {
-		return CreateSBPInvoiceResult{}, fmt.Errorf("user id is required")
+		return CreateInvoiceResult{}, fmt.Errorf("user id is required")
 	}
 	if params.Amount.Amount <= 0 {
-		return CreateSBPInvoiceResult{}, fmt.Errorf("amount must be positive")
+		return CreateInvoiceResult{}, fmt.Errorf("amount must be positive")
 	}
 	if params.IdempotencyKey == "" {
 		params.IdempotencyKey = uuid.NewString()
+	}
+	if params.NotificationURL == "" {
+		params.NotificationURL = s.defaultNotifyURL
 	}
 	orderID := params.OrderID
 	if orderID == "" {
@@ -67,7 +71,7 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateSBPI
 			if sbpMeta.Extra != nil {
 				status = fmt.Sprint(sbpMeta.Extra["status"])
 			}
-			return CreateSBPInvoiceResult{
+			return CreateInvoiceResult{
 				Invoice: existing,
 				QR: tochka.RegisterQRCodeResponse{
 					QRID:          sbpMeta.QRID,
@@ -81,15 +85,15 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateSBPI
 				},
 			}, nil
 		}
-		return CreateSBPInvoiceResult{Invoice: existing}, nil
+		return CreateInvoiceResult{Invoice: existing}, nil
 	}
 	if err != nil && !errors.Is(err, domain.ErrInvoiceNotFound) {
-		return CreateSBPInvoiceResult{}, fmt.Errorf("get invoice by key: %w", err)
+		return CreateInvoiceResult{}, fmt.Errorf("get invoice by key: %w", err)
 	}
 
 	account, err := s.billing.EnsureAccount(ctx, params.UserID)
 	if err != nil {
-		return CreateSBPInvoiceResult{}, fmt.Errorf("ensure account: %w", err)
+		return CreateInvoiceResult{}, fmt.Errorf("ensure account: %w", err)
 	}
 	if params.Amount.Currency == "" {
 		params.Amount.Currency = account.Balance.Currency
@@ -106,7 +110,7 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateSBPI
 	}
 	qrResponse, err := s.client.RegisterQRCode(ctx, qrRequest)
 	if err != nil {
-		return CreateSBPInvoiceResult{}, fmt.Errorf("register qr code: %w", err)
+		return CreateInvoiceResult{}, fmt.Errorf("register qr code: %w", err)
 	}
 
 	sbpMeta := domain.InvoiceSBPMetadata{
@@ -133,10 +137,10 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateSBPI
 		IdempotencyKey: params.IdempotencyKey,
 	})
 	if err != nil {
-		return CreateSBPInvoiceResult{}, fmt.Errorf("create invoice: %w", err)
+		return CreateInvoiceResult{}, fmt.Errorf("create invoice: %w", err)
 	}
 
-	return CreateSBPInvoiceResult{Invoice: invoice, QR: qrResponse}, nil
+	return CreateInvoiceResult{Invoice: invoice, QR: qrResponse}, nil
 }
 
 func (s *Service) HandleIncomingPayment(ctx context.Context, notification tochka.IncomingPaymentNotification) (domain.Payment, error) {

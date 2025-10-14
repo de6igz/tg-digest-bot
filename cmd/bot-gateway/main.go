@@ -16,14 +16,12 @@ import (
 	"tg-digest-bot/internal/adapters/bot"
 	"tg-digest-bot/internal/adapters/mtproto"
 	"tg-digest-bot/internal/adapters/repo"
-	"tg-digest-bot/internal/adapters/tochka"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/config"
 	"tg-digest-bot/internal/infra/db"
 	"tg-digest-bot/internal/infra/log"
 	"tg-digest-bot/internal/infra/metrics"
 	"tg-digest-bot/internal/infra/queue"
-	billingusecase "tg-digest-bot/internal/usecase/billing"
 	"tg-digest-bot/internal/usecase/channels"
 	"tg-digest-bot/internal/usecase/schedule"
 )
@@ -44,13 +42,6 @@ func main() {
 	defer pool.Close()
 
 	repoAdapter := repo.NewPostgres(pool)
-	tochkaClient := tochka.NewClient(tochka.Config{
-		BaseURL:     cfg.Tochka.BaseURL,
-		MerchantID:  cfg.Tochka.MerchantID,
-		AccountID:   cfg.Tochka.AccountID,
-		AccessToken: cfg.Tochka.AccessToken,
-		Timeout:     cfg.Tochka.Timeout,
-	})
 	var billingAdapter domain.Billing
 	if cfg.Billing.BaseURL != "" {
 		client, err := billingclient.New(cfg.Billing.BaseURL, billingclient.WithTimeout(cfg.Billing.Timeout))
@@ -61,9 +52,9 @@ func main() {
 	} else {
 		logger.Warn().Msg("бот: не настроен BILLING_BASE_URL, функции биллинга отключены")
 	}
-	var sbpService *billingusecase.Service
-	if billingAdapter != nil {
-		sbpService = billingusecase.NewService(billingAdapter, tochkaClient, logger.With().Str("component", "billing_sbp").Logger())
+	var sbpClient domain.BillingSBP
+	if b, ok := billingAdapter.(domain.BillingSBP); ok {
+		sbpClient = b
 	}
 	if cfg.RabbitURL == "" {
 		logger.Fatal().Msg("не указан адрес RabbitMQ (RABBITMQ_URL)")
@@ -105,7 +96,7 @@ func main() {
 		logger.Fatal().Err(err).Msg("не удалось создать бота")
 	}
 
-	h := bot.NewHandler(botAPI, logger, channelService, scheduleService, repoAdapter, billingAdapter, sbpService, digestQueue, cfg.Limits.DigestMax, cfg.Tochka.NotificationURL)
+	h := bot.NewHandler(botAPI, logger, channelService, scheduleService, repoAdapter, billingAdapter, sbpClient, digestQueue, cfg.Limits.DigestMax)
 
 	r := chi.NewRouter()
 	r.Post("/bot/webhook", func(w http.ResponseWriter, r *http.Request) {

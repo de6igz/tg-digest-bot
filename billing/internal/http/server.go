@@ -1,18 +1,44 @@
 package httpapi
 
 import (
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	chi "github.com/go-chi/chi/v5"
+	"github.com/rs/zerolog"
 
 	"billing/internal/domain"
+	"billing/internal/tochka"
+	sbpusecase "billing/internal/usecase/sbp"
 )
 
 type Server struct {
-	billing domain.Billing
+	billing          domain.Billing
+	log              zerolog.Logger
+	sbpService       *sbpusecase.Service
+	sbpWebhookSecret string
+	sbpWebhookKey    *rsa.PublicKey
+}
+
+type Option func(*Server)
+
+func WithLogger(log zerolog.Logger) Option {
+	return func(s *Server) {
+		s.log = log
+	}
+}
+
+func WithSBPService(service *sbpusecase.Service, webhookSecret string, webhookKey *rsa.PublicKey) Option {
+	return func(s *Server) {
+		s.sbpService = service
+		s.sbpWebhookSecret = webhookSecret
+		s.sbpWebhookKey = webhookKey
+	}
 }
 
 type errorResponse struct {
@@ -48,8 +74,42 @@ type registerPaymentRequest struct {
 	IdempotencyKey string         `json:"idempotency_key"`
 }
 
-func NewServer(b domain.Billing) *Server {
-	return &Server{billing: b}
+type createSBPInvoiceRequest struct {
+	UserID          int64          `json:"user_id"`
+	AmountMinor     int64          `json:"amount_minor"`
+	Currency        string         `json:"currency"`
+	Description     string         `json:"description"`
+	PaymentPurpose  string         `json:"payment_purpose"`
+	IdempotencyKey  string         `json:"idempotency_key"`
+	OrderID         string         `json:"order_id"`
+	QRType          string         `json:"qr_type"`
+	NotificationURL string         `json:"notification_url"`
+	Metadata        map[string]any `json:"metadata"`
+	Extra           map[string]any `json:"extra"`
+}
+
+type sbpQRCodeResponse struct {
+	QRID          string         `json:"qr_id"`
+	OrderID       string         `json:"order_id"`
+	PaymentLink   string         `json:"payment_link,omitempty"`
+	Payload       string         `json:"payload,omitempty"`
+	PayloadBase64 string         `json:"payload_base64,omitempty"`
+	Status        string         `json:"status,omitempty"`
+	ExpiresAt     *time.Time     `json:"expires_at,omitempty"`
+	Raw           map[string]any `json:"raw,omitempty"`
+}
+
+type createSBPInvoiceResponse struct {
+	Invoice domain.Invoice    `json:"invoice"`
+	QR      sbpQRCodeResponse `json:"qr"`
+}
+
+func NewServer(b domain.Billing, opts ...Option) *Server {
+	srv := &Server{billing: b, log: zerolog.Nop()}
+	for _, opt := range opts {
+		opt(srv)
+	}
+	return srv
 }
 
 func (s *Server) Router() http.Handler {
@@ -64,6 +124,11 @@ func (s *Server) Router() http.Handler {
 	r.Get("/api/v1/invoices/idempotency/{key}", s.handleGetInvoiceByIdempotencyKey)
 
 	r.Post("/api/v1/payments/incoming", s.handleRegisterIncomingPayment)
+
+	if s.sbpService != nil {
+		r.Post("/api/v1/sbp/invoices", s.handleCreateSBPInvoice)
+		r.Post("/api/v1/sbp/webhook", s.handleSBPWebhook)
+	}
 
 	return r
 }
@@ -213,6 +278,100 @@ func (s *Server) handleRegisterIncomingPayment(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, payment)
+}
+
+func (s *Server) handleCreateSBPInvoice(w http.ResponseWriter, r *http.Request) {
+	if s.sbpService == nil {
+		writeError(w, http.StatusServiceUnavailable, "sbp_not_configured", "sbp service is not available")
+		return
+	}
+	var req createSBPInvoiceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid request body")
+		return
+	}
+	if req.UserID == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "user_id is required")
+		return
+	}
+	if req.AmountMinor <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "amount_minor must be positive")
+		return
+	}
+	params := sbpusecase.CreateInvoiceParams{
+		UserID:          req.UserID,
+		Amount:          domain.Money{Amount: req.AmountMinor, Currency: req.Currency},
+		Description:     req.Description,
+		PaymentPurpose:  req.PaymentPurpose,
+		IdempotencyKey:  req.IdempotencyKey,
+		OrderID:         req.OrderID,
+		QRType:          req.QRType,
+		NotificationURL: req.NotificationURL,
+		Metadata:        req.Metadata,
+		Extra:           req.Extra,
+	}
+	result, err := s.sbpService.CreateInvoiceWithQRCode(r.Context(), params)
+	if err != nil {
+		s.log.Error().Err(err).Msg("sbp: create invoice")
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to create invoice")
+		return
+	}
+	resp := createSBPInvoiceResponse{
+		Invoice: result.Invoice,
+		QR: sbpQRCodeResponse{
+			QRID:          result.QR.QRID,
+			OrderID:       result.QR.OrderID,
+			PaymentLink:   result.QR.PaymentLink,
+			Payload:       result.QR.Payload,
+			PayloadBase64: result.QR.PayloadBase64,
+			Status:        result.QR.Status,
+			ExpiresAt:     result.QR.ExpiresAt,
+			Raw:           result.QR.Raw,
+		},
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleSBPWebhook(w http.ResponseWriter, r *http.Request) {
+	if s.sbpService == nil {
+		writeError(w, http.StatusServiceUnavailable, "sbp_not_configured", "sbp service is not available")
+		return
+	}
+	if s.sbpWebhookSecret != "" {
+		secret := r.Header.Get("X-Webhook-Secret")
+		if secret == "" {
+			secret = r.URL.Query().Get("token")
+		}
+		if secret != s.sbpWebhookSecret {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid webhook secret")
+			return
+		}
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "failed to read body")
+		return
+	}
+	notification, err := tochka.ParseSbpWebhook(body, s.sbpWebhookKey)
+	if err != nil {
+		if errors.Is(err, tochka.ErrInvalidWebhookSignature) {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", "invalid webhook payload")
+		return
+	}
+	payment, err := s.sbpService.HandleIncomingPayment(r.Context(), notification)
+	if err != nil {
+		if errors.Is(err, domain.ErrInvoiceNotFound) {
+			writeError(w, http.StatusNotFound, "invoice_not_found", "invoice not found")
+			return
+		}
+		s.log.Error().Err(err).Msg("sbp: handle webhook")
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to register payment")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "payment_id": payment.ID})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

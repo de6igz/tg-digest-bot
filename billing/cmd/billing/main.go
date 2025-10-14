@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"fmt"
 	"net/http"
 	"os"
@@ -16,6 +17,8 @@ import (
 	"billing/internal/config"
 	httpapi "billing/internal/http"
 	"billing/internal/storage"
+	"billing/internal/tochka"
+	sbpusecase "billing/internal/usecase/sbp"
 )
 
 func main() {
@@ -36,7 +39,37 @@ func main() {
 	defer pool.Close()
 
 	billingRepo := storage.NewPostgres(pool)
-	server := httpapi.NewServer(billingRepo)
+
+	var sbpService *sbpusecase.Service
+	var webhookKey *rsa.PublicKey
+	if cfg.Tochka.MerchantID != "" && cfg.Tochka.AccountID != "" && cfg.Tochka.AccessToken != "" {
+		tochkaClient := tochka.NewClient(tochka.Config{
+			BaseURL:     cfg.Tochka.BaseURL,
+			MerchantID:  cfg.Tochka.MerchantID,
+			AccountID:   cfg.Tochka.AccountID,
+			AccessToken: cfg.Tochka.AccessToken,
+			Timeout:     cfg.Tochka.Timeout,
+		})
+		sbpService = sbpusecase.NewService(billingRepo, tochkaClient, cfg.Tochka.NotificationURL, log.With().Str("component", "sbp").Logger())
+		if cfg.Tochka.NotificationURL == "" {
+			log.Warn().Msg("billing: TOCHKA_NOTIFICATION_URL is not set, webhook callbacks may fail")
+		}
+		if cfg.Tochka.WebhookKey != "" {
+			key, err := tochka.ParseRSAPublicKeyFromJWK([]byte(cfg.Tochka.WebhookKey))
+			if err != nil {
+				log.Fatal().Err(err).Msg("billing: invalid tochka webhook key")
+			}
+			webhookKey = key
+		}
+	} else {
+		log.Warn().Msg("billing: tochka credentials are not fully configured, SBP endpoints disabled")
+	}
+
+	opts := []httpapi.Option{httpapi.WithLogger(log.Logger)}
+	if sbpService != nil {
+		opts = append(opts, httpapi.WithSBPService(sbpService, cfg.Tochka.WebhookSecret, webhookKey))
+	}
+	server := httpapi.NewServer(billingRepo, opts...)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),

@@ -11,8 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"tg-digest-bot/internal/domain"
-	"tg-digest-bot/internal/infra/metrics"
+	"billing/internal/domain"
 )
 
 type Config struct {
@@ -133,9 +132,7 @@ func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) 
 		httpReq.Header.Set("Authorization", "Bearer "+c.cfg.AccessToken)
 	}
 
-	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
-	metrics.ObserveNetworkRequest("tochka", "register_qr_code", "sbp", start, err)
 	if err != nil {
 		return RegisterQRCodeResponse{}, fmt.Errorf("send request: %w", err)
 	}

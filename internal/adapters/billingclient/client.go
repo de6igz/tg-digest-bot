@@ -125,6 +125,33 @@ func (c *Client) ChargeAccount(ctx context.Context, params domain.ChargeAccountP
 	return payment, nil
 }
 
+func (c *Client) CreateInvoiceWithQRCode(ctx context.Context, params domain.CreateSBPInvoiceParams) (domain.CreateSBPInvoiceResult, error) {
+	payload := map[string]any{
+		"user_id":          params.UserID,
+		"amount_minor":     params.Amount.Amount,
+		"currency":         params.Amount.Currency,
+		"description":      params.Description,
+		"payment_purpose":  params.PaymentPurpose,
+		"idempotency_key":  params.IdempotencyKey,
+		"order_id":         params.OrderID,
+		"qr_type":          params.QRType,
+		"notification_url": params.NotificationURL,
+		"metadata":         params.Metadata,
+		"extra":            params.Extra,
+	}
+	if params.Metadata == nil {
+		delete(payload, "metadata")
+	}
+	if params.Extra == nil {
+		delete(payload, "extra")
+	}
+	var result domain.CreateSBPInvoiceResult
+	if err := c.post(ctx, "/api/v1/sbp/invoices", payload, &result); err != nil {
+		return domain.CreateSBPInvoiceResult{}, err
+	}
+	return result, nil
+}
+
 func (c *Client) get(ctx context.Context, endpoint string, out any) error {
 	req, err := c.newRequest(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -213,3 +240,4 @@ func mapAPIError(status int, err apiError) error {
 }
 
 var _ domain.Billing = (*Client)(nil)
+var _ domain.BillingSBP = (*Client)(nil)

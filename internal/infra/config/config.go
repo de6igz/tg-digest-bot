@@ -42,17 +42,6 @@ type AppConfig struct {
 		Timeout time.Duration `envconfig:"OPENAI_TIMEOUT" default:"1200s"`
 	} `envconfig:""`
 
-	Tochka struct {
-		BaseURL         string        `envconfig:"TOCHKA_BASE_URL" default:"https://enter.tochka.com"`
-		MerchantID      string        `envconfig:"TOCHKA_MERCHANT_ID"`
-		AccountID       string        `envconfig:"TOCHKA_ACCOUNT_ID"`
-		AccessToken     string        `envconfig:"TOCHKA_ACCESS_TOKEN"`
-		Timeout         time.Duration `envconfig:"TOCHKA_TIMEOUT" default:"15s"`
-		NotificationURL string        `envconfig:"TOCHKA_NOTIFICATION_URL"`
-		WebhookSecret   string        `envconfig:"TOCHKA_WEBHOOK_SECRET"`
-		WebhookKey      string        `envconfig:"TOCHKA_WEBHOOK_PUBLIC_KEY"`
-	} `envconfig:""`
-
 	Billing struct {
 		BaseURL string        `envconfig:"BILLING_BASE_URL"`
 		Timeout time.Duration `envconfig:"BILLING_TIMEOUT" default:"10s"`
