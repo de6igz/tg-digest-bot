@@ -12,41 +12,51 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"tg-digest-bot/internal/adapters/telegram"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/metrics"
+	billingusecase "tg-digest-bot/internal/usecase/billing"
 	"tg-digest-bot/internal/usecase/channels"
 	"tg-digest-bot/internal/usecase/schedule"
 )
 
 // Handler обслуживает вебхук бота.
 type Handler struct {
-	bot         *tgbotapi.BotAPI
-	log         zerolog.Logger
-	channelUC   *channels.Service
-	scheduleUC  *schedule.Service
-	users       domain.UserRepo
-	jobs        domain.DigestQueue
-	maxDigest   int
-	mu          sync.Mutex
-	pendingDrop map[int64]time.Time
-	pendingTime map[int64]struct{}
+	bot          *tgbotapi.BotAPI
+	log          zerolog.Logger
+	channelUC    *channels.Service
+	scheduleUC   *schedule.Service
+	users        domain.UserRepo
+	billing      domain.Billing
+	sbp          *billingusecase.Service
+	jobs         domain.DigestQueue
+	maxDigest    int
+	mu           sync.Mutex
+	pendingDrop  map[int64]time.Time
+	pendingTime  map[int64]struct{}
+	sbpNotifyURL string
+	offers       map[string]subscriptionOffer
 }
 
 // NewHandler создаёт обработчик.
-func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, jobs domain.DigestQueue, maxDigest int) *Handler {
+func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, billing domain.Billing, sbpService *billingusecase.Service, jobs domain.DigestQueue, maxDigest int, sbpNotifyURL string) *Handler {
 	return &Handler{
-		bot:         bot,
-		log:         log,
-		channelUC:   channelUC,
-		scheduleUC:  scheduleUC,
-		users:       userRepo,
-		jobs:        jobs,
-		maxDigest:   maxDigest,
-		pendingDrop: make(map[int64]time.Time),
-		pendingTime: make(map[int64]struct{}),
+		bot:          bot,
+		log:          log,
+		channelUC:    channelUC,
+		scheduleUC:   scheduleUC,
+		users:        userRepo,
+		billing:      billing,
+		sbp:          sbpService,
+		jobs:         jobs,
+		maxDigest:    maxDigest,
+		pendingDrop:  make(map[int64]time.Time),
+		pendingTime:  make(map[int64]struct{}),
+		sbpNotifyURL: sbpNotifyURL,
+		offers:       defaultSubscriptionOffers(),
 	}
 }
 
@@ -71,6 +81,26 @@ func (h *Handler) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		h.handleStart(ctx, msg)
 	case strings.HasPrefix(text, "/help"):
 		h.handleHelp(msg.Chat.ID)
+	case strings.HasPrefix(text, "/balance"):
+		if msg.From == nil {
+			h.reply(msg.Chat.ID, "Не удалось определить пользователя", nil)
+			return
+		}
+		h.handleBalance(ctx, msg.Chat.ID, msg.From.ID)
+	case strings.HasPrefix(text, "/deposit"):
+		if msg.From == nil {
+			h.reply(msg.Chat.ID, "Не удалось определить пользователя", nil)
+			return
+		}
+		amount := strings.TrimSpace(strings.TrimPrefix(text, "/deposit"))
+		h.handleDeposit(ctx, msg.Chat.ID, msg.From.ID, amount)
+	case strings.HasPrefix(text, "/buy"):
+		if msg.From == nil {
+			h.reply(msg.Chat.ID, "Не удалось определить пользователя", nil)
+			return
+		}
+		plan := strings.TrimSpace(strings.TrimPrefix(text, "/buy"))
+		h.handleBuySubscription(ctx, msg.Chat.ID, msg.From.ID, plan)
 	case strings.HasPrefix(text, "/add"):
 		alias := strings.TrimSpace(strings.TrimPrefix(text, "/add"))
 		h.handleAdd(ctx, msg.Chat.ID, msg.From.ID, alias)
@@ -160,6 +190,268 @@ func (h *Handler) handleStart(ctx context.Context, msg *tgbotapi.Message) {
 
 func (h *Handler) handleHelp(chatID int64) {
 	h.reply(chatID, h.buildHelpMessage(), h.mainKeyboard())
+}
+
+func (h *Handler) handleBalance(ctx context.Context, chatID, tgUserID int64) {
+	if tgUserID == 0 {
+		h.reply(chatID, "Не удалось определить пользователя", nil)
+		return
+	}
+	if h.billing == nil {
+		h.reply(chatID, "Биллинг временно недоступен. Попробуйте позже.", nil)
+		return
+	}
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	account, err := h.billing.EnsureAccount(ctx, user.ID)
+	if err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("billing: ensure account failed")
+		h.reply(chatID, "Не удалось получить баланс. Попробуйте позже.", nil)
+		return
+	}
+	balanceText := formatMoney(account.Balance.Amount, account.Balance.Currency)
+	lines := []string{
+		"💳 Баланс счёта:",
+		fmt.Sprintf("• %s", balanceText),
+		"",
+		"Пополните баланс командой /deposit 500 или через кнопки ниже.",
+	}
+	h.reply(chatID, strings.Join(lines, "\n"), h.balanceKeyboard())
+}
+
+func (h *Handler) handleDeposit(ctx context.Context, chatID, tgUserID int64, payload string) {
+	if tgUserID == 0 {
+		h.reply(chatID, "Не удалось определить пользователя", nil)
+		return
+	}
+	if h.billing == nil || h.sbp == nil {
+		h.reply(chatID, "Пополнение временно недоступно. Попробуйте позже.", nil)
+		return
+	}
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	amountText := strings.TrimSpace(payload)
+	if amountText == "" {
+		h.sendTopUpMenu(chatID)
+		return
+	}
+	amountMinor, err := parseAmountToMinor(amountText)
+	if err != nil || amountMinor <= 0 {
+		h.reply(chatID, "Укажите сумму в рублях, например /deposit 500 или /deposit 249.99", h.topUpPresetKeyboard())
+		return
+	}
+	if amountMinor < 100 {
+		h.reply(chatID, "Минимальная сумма пополнения — 1 ₽.", h.topUpPresetKeyboard())
+		return
+	}
+	account, err := h.billing.EnsureAccount(ctx, user.ID)
+	if err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("billing: ensure account failed")
+		h.reply(chatID, "Не удалось создать счёт для пополнения. Попробуйте позже.", nil)
+		return
+	}
+	currency := account.Balance.Currency
+	if currency == "" {
+		currency = "RUB"
+	}
+	description := fmt.Sprintf("Пополнение баланса TG Digest Bot на %s", formatMoney(amountMinor, currency))
+	idempotencyKey := uuid.NewString()
+	metadata := map[string]any{
+		"type":        "topup",
+		"source":      "telegram_bot",
+		"user_id":     user.ID,
+		"tg_user_id":  tgUserID,
+		"description": description,
+	}
+	params := billingusecase.CreateSBPInvoiceParams{
+		UserID:         user.ID,
+		Amount:         domain.Money{Amount: amountMinor, Currency: currency},
+		Description:    description,
+		PaymentPurpose: fmt.Sprintf("Пополнение TG Digest Bot для пользователя %d", user.ID),
+		IdempotencyKey: idempotencyKey,
+		Metadata:       metadata,
+		Extra: map[string]any{
+			"user_id":    user.ID,
+			"tg_user_id": tgUserID,
+			"source":     "telegram_bot",
+		},
+	}
+	if h.sbpNotifyURL != "" {
+		params.NotificationURL = h.sbpNotifyURL
+	}
+	result, err := h.sbp.CreateInvoiceWithQRCode(ctx, params)
+	if err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("billing: create sbp invoice failed")
+		h.reply(chatID, "Не удалось создать счёт для пополнения. Попробуйте позже.", nil)
+		return
+	}
+	amountFmt := formatMoney(result.Invoice.Amount.Amount, result.Invoice.Amount.Currency)
+	lines := []string{
+		"🧾 Счёт на пополнение создан.",
+		fmt.Sprintf("Сумма: %s.", amountFmt),
+	}
+	if result.QR.PaymentLink != "" {
+		lines = append(lines, fmt.Sprintf("Ссылка на оплату: %s", result.QR.PaymentLink))
+	}
+	if result.QR.ExpiresAt != nil {
+		lines = append(lines, fmt.Sprintf("Счёт действует до %s.", result.QR.ExpiresAt.Local().Format("02.01.2006 15:04")))
+	}
+	lines = append(lines,
+		"",
+		"Оплатите счёт в приложении банка. Баланс обновится автоматически после поступления денег.",
+	)
+	h.reply(chatID, strings.Join(lines, "\n"), h.topUpInvoiceKeyboard(result.QR.PaymentLink))
+}
+
+func (h *Handler) handleBuySubscription(ctx context.Context, chatID, tgUserID int64, payload string) {
+	if tgUserID == 0 {
+		h.reply(chatID, "Не удалось определить пользователя", nil)
+		return
+	}
+	if h.billing == nil {
+		h.reply(chatID, "Биллинг временно недоступен. Попробуйте позже.", nil)
+		return
+	}
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	planKey := strings.ToLower(strings.TrimSpace(payload))
+	if planKey == "" {
+		h.sendSubscriptionMenu(chatID, user)
+		return
+	}
+	offer, ok := h.offers[planKey]
+	if !ok {
+		h.reply(chatID, "Укажите тариф: /buy plus или /buy pro.", h.subscriptionKeyboard(user))
+		return
+	}
+	if planPriority(user.Role) >= planPriority(offer.Role) {
+		h.reply(chatID, fmt.Sprintf("У вас уже активен тариф %s или выше.", domain.PlanForRole(user.Role).Name), h.subscriptionKeyboard(user))
+		return
+	}
+	account, err := h.billing.EnsureAccount(ctx, user.ID)
+	if err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("billing: ensure account failed")
+		h.reply(chatID, "Не удалось проверить баланс. Попробуйте позже.", nil)
+		return
+	}
+	currency := account.Balance.Currency
+	if currency == "" {
+		currency = "RUB"
+	}
+	if account.Balance.Amount < offer.PriceMinor {
+		shortage := offer.PriceMinor - account.Balance.Amount
+		lines := []string{
+			"Недостаточно средств на счёте для покупки подписки.",
+			fmt.Sprintf("Нужно ещё %s.", formatMoney(shortage, currency)),
+		}
+		h.reply(chatID, strings.Join(lines, "\n"), h.topUpPresetKeyboard())
+		return
+	}
+	metadata := map[string]any{
+		"type":       "subscription_charge",
+		"plan":       offer.Key,
+		"plan_name":  offer.Title,
+		"user_id":    user.ID,
+		"tg_user_id": tgUserID,
+		"duration":   offer.Duration,
+	}
+	description := fmt.Sprintf("Подписка %s", offer.Title)
+	payment, err := h.billing.ChargeAccount(ctx, domain.ChargeAccountParams{
+		AccountID:      account.ID,
+		Amount:         domain.Money{Amount: offer.PriceMinor, Currency: currency},
+		Description:    description,
+		Metadata:       metadata,
+		IdempotencyKey: uuid.NewString(),
+	})
+	if err != nil {
+		if errors.Is(err, domain.ErrInsufficientFunds) {
+			h.reply(chatID, "Недостаточно средств на счёте. Пополните баланс командой /deposit 500.", h.topUpPresetKeyboard())
+			return
+		}
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("billing: charge account failed")
+		h.reply(chatID, "Не удалось списать оплату. Попробуйте позже или обратитесь в поддержку.", nil)
+		return
+	}
+	if err := h.users.UpdateRole(user.ID, offer.Role); err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("billing: update role failed")
+		h.reply(chatID, "Оплата прошла, но не удалось активировать подписку. Напишите в поддержку, мы всё исправим.", nil)
+		return
+	}
+	user.Role = offer.Role
+	plan := user.Plan()
+	channelLine, manualLine := h.mainPlanLines(plan)
+	balance, balErr := h.billing.GetAccountByUserID(ctx, user.ID)
+	if balErr != nil {
+		h.log.Error().Err(balErr).Int64("user", tgUserID).Msg("billing: get balance after charge")
+	}
+	lines := []string{
+		fmt.Sprintf("✅ Подписка %s активирована!", offer.Title),
+		fmt.Sprintf("Списано: %s (платёж #%d).", formatMoney(offer.PriceMinor, currency), payment.ID),
+		fmt.Sprintf("Доступ действует: %s.", offer.Duration),
+		"",
+		"Новые лимиты:",
+		fmt.Sprintf("• %s", channelLine),
+		fmt.Sprintf("• %s", manualLine),
+	}
+	if balErr == nil {
+		lines = append(lines, "", fmt.Sprintf("Текущий баланс: %s.", formatMoney(balance.Balance.Amount, balance.Balance.Currency)))
+	}
+	lines = append(lines, "", "Спасибо, что поддерживаете проект!")
+	h.reply(chatID, strings.Join(lines, "\n"), h.balanceKeyboard())
+}
+
+func (h *Handler) sendTopUpMenu(chatID int64) {
+	lines := []string{
+		"💰 Пополнение баланса:",
+		"Выберите сумму ниже или отправьте команду /deposit 500 для пополнения на 500 ₽.",
+		"Можно указать копейки через точку, например /deposit 249.99.",
+	}
+	h.reply(chatID, strings.Join(lines, "\n"), h.topUpPresetKeyboard())
+}
+
+func (h *Handler) sendSubscriptionMenu(chatID int64, user domain.User) {
+	offers := h.subscriptionOffersOrdered()
+	if len(offers) == 0 {
+		h.reply(chatID, "Подписки временно недоступны.", nil)
+		return
+	}
+	var lines []string
+	lines = append(lines, "🛒 Доступные подписки:")
+	available := 0
+	for _, offer := range offers {
+		if planPriority(user.Role) >= planPriority(offer.Role) {
+			continue
+		}
+		available++
+		price := formatMoney(offer.PriceMinor, "RUB")
+		lines = append(lines,
+			"",
+			fmt.Sprintf("• %s — %s (%s)", offer.Title, price, offer.Duration),
+		)
+		for _, bullet := range offer.Bullets {
+			lines = append(lines, fmt.Sprintf("   ◦ %s", bullet))
+		}
+		lines = append(lines, fmt.Sprintf("   Команда: /buy %s", offer.Key))
+	}
+	if available == 0 {
+		lines = append(lines, "", "Вы уже используете максимальный тариф. Спасибо, что поддерживаете проект!")
+		h.reply(chatID, strings.Join(lines, "\n"), nil)
+		return
+	}
+	lines = append(lines,
+		"",
+		"Для оформления подпишитесь через кнопку ниже или пополните баланс командой /deposit сумма.",
+	)
+	h.reply(chatID, strings.Join(lines, "\n"), h.subscriptionKeyboard(user))
 }
 
 func (h *Handler) handleAdd(ctx context.Context, chatID int64, tgUserID int64, alias string) {
@@ -417,6 +709,18 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 		h.sendPlanInfo(cb.Message.Chat.ID, cb.From.ID)
 	case data == "referral_info":
 		h.sendReferralInfo(cb.Message.Chat.ID, cb.From.ID)
+	case data == "billing_balance":
+		h.handleBalance(ctx, cb.Message.Chat.ID, cb.From.ID)
+	case data == "billing_topup":
+		h.handleDeposit(ctx, cb.Message.Chat.ID, cb.From.ID, "")
+	case strings.HasPrefix(data, "billing_topup:"):
+		amount := strings.TrimPrefix(data, "billing_topup:")
+		h.handleDeposit(ctx, cb.Message.Chat.ID, cb.From.ID, amount)
+	case data == "billing_subscribe":
+		h.handleBuySubscription(ctx, cb.Message.Chat.ID, cb.From.ID, "")
+	case strings.HasPrefix(data, "plan_buy:"):
+		planKey := strings.TrimPrefix(data, "plan_buy:")
+		h.handleBuySubscription(ctx, cb.Message.Chat.ID, cb.From.ID, planKey)
 	case data == "digest_now":
 		h.handleDigestNow(ctx, cb.Message.Chat.ID, cb.From.ID)
 	case data == "digest_all":
@@ -755,6 +1059,185 @@ func userHasTags(channelsList []domain.UserChannel, tags []string) bool {
 	return false
 }
 
+func (h *Handler) subscriptionOffersOrdered() []subscriptionOffer {
+	offers := make([]subscriptionOffer, 0, len(h.offers))
+	for _, offer := range h.offers {
+		offers = append(offers, offer)
+	}
+	sort.Slice(offers, func(i, j int) bool {
+		if offers[i].PriceMinor == offers[j].PriceMinor {
+			return planPriority(offers[i].Role) < planPriority(offers[j].Role)
+		}
+		return offers[i].PriceMinor < offers[j].PriceMinor
+	})
+	return offers
+}
+
+func (h *Handler) balanceKeyboard() *tgbotapi.InlineKeyboardMarkup {
+	rows := [][]tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💰 Пополнить", "billing_topup"),
+			tgbotapi.NewInlineKeyboardButtonData("🛒 Подписка", "billing_subscribe"),
+		),
+	}
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	return &markup
+}
+
+func (h *Handler) topUpPresetKeyboard() *tgbotapi.InlineKeyboardMarkup {
+	if len(defaultTopUpPresets) == 0 {
+		return h.balanceKeyboard()
+	}
+	row := make([]tgbotapi.InlineKeyboardButton, 0, len(defaultTopUpPresets))
+	for _, amount := range defaultTopUpPresets {
+		label, payload := presetButtonData(amount)
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData(label, "billing_topup:"+payload))
+	}
+	rows := [][]tgbotapi.InlineKeyboardButton{row,
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💳 Баланс", "billing_balance"),
+		),
+	}
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	return &markup
+}
+
+func (h *Handler) topUpInvoiceKeyboard(link string) *tgbotapi.InlineKeyboardMarkup {
+	var rows [][]tgbotapi.InlineKeyboardButton
+	if strings.TrimSpace(link) != "" {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("🔗 Оплатить", link),
+		))
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("💳 Баланс", "billing_balance"),
+		tgbotapi.NewInlineKeyboardButtonData("🛒 Подписка", "billing_subscribe"),
+	))
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	return &markup
+}
+
+func (h *Handler) subscriptionKeyboard(user domain.User) *tgbotapi.InlineKeyboardMarkup {
+	offers := h.subscriptionOffersOrdered()
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for _, offer := range offers {
+		if planPriority(user.Role) >= planPriority(offer.Role) {
+			continue
+		}
+		label := fmt.Sprintf("%s — %s", offer.Title, formatMoney(offer.PriceMinor, "RUB"))
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(label, "plan_buy:"+offer.Key),
+		))
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("💰 Пополнить", "billing_topup"),
+		tgbotapi.NewInlineKeyboardButtonData("💳 Баланс", "billing_balance"),
+	))
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	return &markup
+}
+
+func planPriority(role domain.UserRole) int {
+	switch role {
+	case domain.UserRoleFree:
+		return 0
+	case domain.UserRolePlus:
+		return 1
+	case domain.UserRolePro:
+		return 2
+	case domain.UserRoleDeveloper:
+		return 3
+	default:
+		return -1
+	}
+}
+
+func formatMoney(amount int64, currency string) string {
+	sign := ""
+	if amount < 0 {
+		sign = "-"
+		amount = -amount
+	}
+	major := amount / 100
+	minor := amount % 100
+	symbol := currencySymbol(currency)
+	return fmt.Sprintf("%s%d.%02d %s", sign, major, minor, symbol)
+}
+
+func currencySymbol(currency string) string {
+	trimmed := strings.TrimSpace(strings.ToUpper(currency))
+	switch trimmed {
+	case "RUB", "RUR":
+		return "₽"
+	case "":
+		return "RUB"
+	default:
+		return trimmed
+	}
+}
+
+func presetButtonData(amount int64) (label string, payload string) {
+	label = formatMoney(amount, "RUB")
+	major := amount / 100
+	minor := amount % 100
+	payload = fmt.Sprintf("%d.%02d", major, minor)
+	payload = strings.TrimRight(strings.TrimRight(payload, "0"), ".")
+	if payload == "" {
+		payload = "0"
+	}
+	return label, payload
+}
+
+func parseAmountToMinor(input string) (int64, error) {
+	trimmed := strings.TrimSpace(strings.ReplaceAll(input, ",", "."))
+	if trimmed == "" {
+		return 0, fmt.Errorf("amount is required")
+	}
+	if strings.HasPrefix(trimmed, "+") {
+		trimmed = strings.TrimPrefix(trimmed, "+")
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return 0, fmt.Errorf("amount must be positive")
+	}
+	if strings.HasPrefix(trimmed, ".") {
+		trimmed = "0" + trimmed
+	}
+	parts := strings.SplitN(trimmed, ".", 2)
+	majorPart := parts[0]
+	if majorPart == "" {
+		majorPart = "0"
+	}
+	major, err := strconv.ParseInt(majorPart, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if major < 0 {
+		return 0, fmt.Errorf("amount must be positive")
+	}
+	var minor int64
+	if len(parts) == 2 {
+		frac := parts[1]
+		if frac == "" {
+			frac = "0"
+		}
+		if len(frac) > 2 {
+			frac = frac[:2]
+		}
+		for len(frac) < 2 {
+			frac += "0"
+		}
+		parsedMinor, err := strconv.ParseInt(frac, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		minor = parsedMinor
+	}
+	return major*100 + minor, nil
+}
+
 func (h *Handler) handleClearRequest(chatID, tgUserID int64) {
 	h.mu.Lock()
 	h.pendingDrop[tgUserID] = time.Now()
@@ -832,6 +1315,13 @@ func (h *Handler) mainKeyboard() *tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🎯 Мой тариф", "plan_info"),
 			tgbotapi.NewInlineKeyboardButtonData("🎁 Рефералы", "referral_info"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💳 Баланс", "billing_balance"),
+			tgbotapi.NewInlineKeyboardButtonData("💰 Пополнить", "billing_topup"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🛒 Подписка", "billing_subscribe"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("ℹ️ Помощь", "help_menu"),
@@ -942,6 +1432,13 @@ func (h *Handler) buildPlanInfoMessage(user domain.User) string {
 		"",
 		"Нажмите «🎁 Рефералы», чтобы увеличить лимиты приглашениями.",
 	)
+	lines = append(lines,
+		"",
+		"Финансы:",
+		"• /balance — посмотреть баланс счёта.",
+		"• /deposit 500 — пополнить баланс на 500 ₽ через СБП.",
+		"• /buy plus — купить подписку Plus, /buy pro — Pro.",
+	)
 	return strings.Join(lines, "\n")
 }
 
@@ -1039,6 +1536,11 @@ func (h *Handler) buildHelpMessage() string {
 		"• /digest_now — собрать дайджест из всех немьютнутых каналов.",
 		"• /digest_tag новости — дайджест только по каналам с тегом \"новости\".",
 		"",
+		"Биллинг:",
+		"• /balance — показать баланс счёта.",
+		"• /deposit 500 — создать счёт на пополнение через СБП.",
+		"• /buy plus — купить подписку Plus (аналогично /buy pro).",
+		"",
 		"Расписание и данные:",
 		"• /schedule — открыть выбор времени.",
 		"• /schedule 21:30 — задать своё время рассылки.",
@@ -1082,4 +1584,42 @@ func SchedulePresetKeyboard() *tgbotapi.InlineKeyboardMarkup {
 // ParseLocalTime парсит время формата ЧЧ:ММ.
 func ParseLocalTime(input string) (time.Time, error) {
 	return time.Parse("15:04", strings.TrimSpace(input))
+}
+
+type subscriptionOffer struct {
+	Key        string
+	Role       domain.UserRole
+	Title      string
+	PriceMinor int64
+	Duration   string
+	Bullets    []string
+}
+
+var defaultTopUpPresets = []int64{30000, 50000, 100000}
+
+func defaultSubscriptionOffers() map[string]subscriptionOffer {
+	return map[string]subscriptionOffer{
+		"plus": {
+			Key:        "plus",
+			Role:       domain.UserRolePlus,
+			Title:      "Plus",
+			PriceMinor: 29900,
+			Duration:   "1 месяц",
+			Bullets: []string{
+				"До 10 каналов",
+				"До 3 ручных дайджестов в день",
+			},
+		},
+		"pro": {
+			Key:        "pro",
+			Role:       domain.UserRolePro,
+			Title:      "Pro",
+			PriceMinor: 49900,
+			Duration:   "1 месяц",
+			Bullets: []string{
+				"До 15 каналов",
+				"До 6 ручных дайджестов в день",
+			},
+		},
+	}
 }

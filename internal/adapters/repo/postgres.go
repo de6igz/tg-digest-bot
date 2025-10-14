@@ -517,6 +517,17 @@ FROM users WHERE id=$1
 	return result, nil
 }
 
+// UpdateRole обновляет тариф пользователя.
+func (p *Postgres) UpdateRole(userID int64, role domain.UserRole) error {
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	start := time.Now()
+	_, err := p.pool.Exec(ctx, `UPDATE users SET role=$2, updated_at=now() WHERE id=$1`, userID, role)
+	metrics.ObserveNetworkRequest("postgres", "users_update_role", "users", start, err)
+	return err
+}
+
 func sameDay(a, b time.Time) bool {
 	a = a.UTC()
 	b = b.UTC()
