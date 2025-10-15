@@ -142,6 +142,8 @@ func (s *Server) Router() http.Handler {
 		e.Use(s.authMiddleware)
 	}
 
+	e.GET("/swagger/openapi.yaml", s.handleSwagger)
+
 	// Billing
 	e.POST("/api/v1/accounts/ensure", s.handleEnsureAccount)
 	e.GET("/api/v1/accounts/by-user/:userID", s.handleGetAccountByUserID)
