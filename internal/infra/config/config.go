@@ -43,8 +43,9 @@ type AppConfig struct {
 	} `envconfig:""`
 
 	Billing struct {
-		BaseURL string        `envconfig:"BILLING_BASE_URL"`
-		Timeout time.Duration `envconfig:"BILLING_TIMEOUT" default:"10s"`
+		BaseURL  string        `envconfig:"BILLING_BASE_URL"`
+		Timeout  time.Duration `envconfig:"BILLING_TIMEOUT" default:"10s"`
+		APIToken string        `envconfig:"BILLING_API_TOKEN"`
 	} `envconfig:""`
 }
 

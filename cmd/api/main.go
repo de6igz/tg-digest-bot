@@ -29,7 +29,14 @@ func main() {
 
 	var billingAdapter domain.Billing
 	if cfg.Billing.BaseURL != "" {
-		client, err := billingclient.New(cfg.Billing.BaseURL, billingclient.WithTimeout(cfg.Billing.Timeout))
+		if cfg.Billing.APIToken == "" {
+			log.Fatal().Msg("api: BILLING_API_TOKEN is required when billing is enabled")
+		}
+		client, err := billingclient.New(
+			cfg.Billing.BaseURL,
+			billingclient.WithTimeout(cfg.Billing.Timeout),
+			billingclient.WithAPIToken(cfg.Billing.APIToken),
+		)
 		if err != nil {
 			log.Fatal().Err(err).Msg("api: invalid billing client config")
 		}
