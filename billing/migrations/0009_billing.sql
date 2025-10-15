@@ -2,7 +2,7 @@ BEGIN;
 
 CREATE TABLE billing_accounts (
     id          BIGSERIAL PRIMARY KEY,
-    user_id     BIGINT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    user_id     BIGINT NOT NULL UNIQUE,
     balance     BIGINT NOT NULL DEFAULT 0,
     currency    TEXT   NOT NULL DEFAULT 'RUB',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -39,6 +39,11 @@ CREATE TABLE billing_payments (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at     TIMESTAMPTZ
 );
+
+
+
+ALTER TABLE billing_invoices
+add column qr_id TEXT;
 
 CREATE INDEX billing_payments_account_id_idx ON billing_payments(account_id);
 CREATE INDEX billing_payments_invoice_id_idx ON billing_payments(invoice_id);

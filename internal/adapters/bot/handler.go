@@ -18,45 +18,42 @@ import (
 	"tg-digest-bot/internal/adapters/telegram"
 	"tg-digest-bot/internal/domain"
 	"tg-digest-bot/internal/infra/metrics"
-	billingusecase "tg-digest-bot/internal/usecase/billing"
 	"tg-digest-bot/internal/usecase/channels"
 	"tg-digest-bot/internal/usecase/schedule"
 )
 
 // Handler обслуживает вебхук бота.
 type Handler struct {
-	bot          *tgbotapi.BotAPI
-	log          zerolog.Logger
-	channelUC    *channels.Service
-	scheduleUC   *schedule.Service
-	users        domain.UserRepo
-	billing      domain.Billing
-	sbp          *billingusecase.Service
-	jobs         domain.DigestQueue
-	maxDigest    int
-	mu           sync.Mutex
-	pendingDrop  map[int64]time.Time
-	pendingTime  map[int64]struct{}
-	sbpNotifyURL string
-	offers       map[string]subscriptionOffer
+	bot         *tgbotapi.BotAPI
+	log         zerolog.Logger
+	channelUC   *channels.Service
+	scheduleUC  *schedule.Service
+	users       domain.UserRepo
+	billing     domain.Billing
+	sbp         domain.BillingSBP
+	jobs        domain.DigestQueue
+	maxDigest   int
+	mu          sync.Mutex
+	pendingDrop map[int64]time.Time
+	pendingTime map[int64]struct{}
+	offers      map[string]subscriptionOffer
 }
 
 // NewHandler создаёт обработчик.
-func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, billing domain.Billing, sbpService *billingusecase.Service, jobs domain.DigestQueue, maxDigest int, sbpNotifyURL string) *Handler {
+func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, billing domain.Billing, sbpService domain.BillingSBP, jobs domain.DigestQueue, maxDigest int) *Handler {
 	return &Handler{
-		bot:          bot,
-		log:          log,
-		channelUC:    channelUC,
-		scheduleUC:   scheduleUC,
-		users:        userRepo,
-		billing:      billing,
-		sbp:          sbpService,
-		jobs:         jobs,
-		maxDigest:    maxDigest,
-		pendingDrop:  make(map[int64]time.Time),
-		pendingTime:  make(map[int64]struct{}),
-		sbpNotifyURL: sbpNotifyURL,
-		offers:       defaultSubscriptionOffers(),
+		bot:         bot,
+		log:         log,
+		channelUC:   channelUC,
+		scheduleUC:  scheduleUC,
+		users:       userRepo,
+		billing:     billing,
+		sbp:         sbpService,
+		jobs:        jobs,
+		maxDigest:   maxDigest,
+		pendingDrop: make(map[int64]time.Time),
+		pendingTime: make(map[int64]struct{}),
+		offers:      defaultSubscriptionOffers(),
 	}
 }
 
@@ -269,7 +266,7 @@ func (h *Handler) handleDeposit(ctx context.Context, chatID, tgUserID int64, pay
 		"tg_user_id":  tgUserID,
 		"description": description,
 	}
-	params := billingusecase.CreateSBPInvoiceParams{
+	params := domain.CreateSBPInvoiceParams{
 		UserID:         user.ID,
 		Amount:         domain.Money{Amount: amountMinor, Currency: currency},
 		Description:    description,
@@ -281,9 +278,6 @@ func (h *Handler) handleDeposit(ctx context.Context, chatID, tgUserID int64, pay
 			"tg_user_id": tgUserID,
 			"source":     "telegram_bot",
 		},
-	}
-	if h.sbpNotifyURL != "" {
-		params.NotificationURL = h.sbpNotifyURL
 	}
 	result, err := h.sbp.CreateInvoiceWithQRCode(ctx, params)
 	if err != nil {
