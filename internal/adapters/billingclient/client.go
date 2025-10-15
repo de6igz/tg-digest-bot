@@ -127,16 +127,20 @@ func (c *Client) ChargeAccount(ctx context.Context, params domain.ChargeAccountP
 
 func (c *Client) CreateInvoiceWithQRCode(ctx context.Context, params domain.CreateSBPInvoiceParams) (domain.CreateSBPInvoiceResult, error) {
 	payload := map[string]any{
-		"user_id":          params.UserID,
-		"amount_minor":     params.Amount.Amount,
-		"currency":         params.Amount.Currency,
-		"description":      params.Description,
-		"payment_purpose":  params.PaymentPurpose,
-		"idempotency_key":  params.IdempotencyKey,
-		"qr_type":          params.QRType,
-		"notification_url": params.NotificationURL,
-		"metadata":         params.Metadata,
-		"extra":            params.Extra,
+		"user_id":         params.UserID,
+		"amount":          params.Amount.Amount,
+		"currency":        params.Amount.Currency,
+		"description":     params.Description,
+		"paymentPurpose":  params.PaymentPurpose,
+		"idempotency_key": params.IdempotencyKey,
+		"metadata":        params.Metadata,
+		"extra":           params.Extra,
+	}
+	if params.QRType != "" {
+		payload["qrcType"] = params.QRType
+	}
+	if params.NotificationURL != "" {
+		payload["redirectUrl"] = params.NotificationURL
 	}
 	if params.Metadata == nil {
 		delete(payload, "metadata")

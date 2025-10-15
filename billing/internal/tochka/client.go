@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	qrType     = "02"
-	sourceName = "Telegram Digest Bot"
-	ttl        = 600 // seconds
+	qrType      = "02"
+	sourceName  = "Telegram Digest Bot"
+	redirectUrl = "https://t.me/news_collector_dev_bot"
+	ttl         = 600 // seconds
 )
 
 type Client struct {
@@ -89,7 +90,7 @@ type registerQrCodeData struct {
 }
 
 type RegisterQRCodeDto struct {
-	Data registerQrCodeData `json:"data"`
+	Data registerQrCodeData `json:"Data"`
 }
 
 type RegisterQRCodeResponse struct {
@@ -128,7 +129,7 @@ func (c *Client) RegisterQRCode(ctx context.Context, req RegisterQRCodeRequest) 
 			},
 			SourceName:  sourceName,
 			Ttl:         ttl,
-			RedirectUrl: req.RedirectUrl,
+			RedirectUrl: redirectUrl,
 		},
 	}
 

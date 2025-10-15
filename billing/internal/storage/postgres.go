@@ -115,7 +115,7 @@ func (p *Postgres) CreateInvoice(ctx context.Context, params domain.CreateInvoic
 INSERT INTO billing_invoices (account_id, amount, currency, description, metadata, idempotency_key,qr_id)
 VALUES ($1, $2, $3, NULLIF($4,''), $5, $6,$7)
 ON CONFLICT (idempotency_key) DO NOTHING
-RETURNING id, account_id, amount, currency, description, metadata, status, idempotency_key,qr_id, created_at, updated_at, paid_at
+RETURNING id, account_id, amount, currency, description, metadata, status, idempotency_key, created_at, updated_at, paid_at,qr_id
 `, params.AccountID, params.Amount.Amount, params.Amount.Currency, params.Description, meta, params.IdempotencyKey, params.QrId)
 	invoice, err := scanInvoice(row)
 	if err == nil {

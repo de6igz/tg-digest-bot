@@ -221,15 +221,18 @@ func (h *Handler) handleBalance(ctx context.Context, chatID, tgUserID int64) {
 
 func (h *Handler) handleDeposit(ctx context.Context, chatID, tgUserID int64, payload string) {
 	if tgUserID == 0 {
+		h.log.Error().Int64("chat", chatID).Msg("bot: deposit request without user id")
 		h.reply(chatID, "Не удалось определить пользователя", nil)
 		return
 	}
 	if h.billing == nil || h.sbp == nil {
+		h.log.Error().Int64("chat", chatID).Int64("user", tgUserID).Msg("bot: billing is not configured for deposit")
 		h.reply(chatID, "Пополнение временно недоступно. Попробуйте позже.", nil)
 		return
 	}
 	user, err := h.users.GetByTGID(tgUserID)
 	if err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("bot: get user by telegram id failed")
 		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
 		return
 	}
@@ -240,10 +243,12 @@ func (h *Handler) handleDeposit(ctx context.Context, chatID, tgUserID int64, pay
 	}
 	amountMinor, err := parseAmountToMinor(amountText)
 	if err != nil || amountMinor <= 0 {
+		h.log.Warn().Err(err).Int64("user", tgUserID).Str("amount", amountText).Msg("bot: invalid deposit amount")
 		h.reply(chatID, "Укажите сумму в рублях, например /deposit 500 или /deposit 249.99", h.topUpPresetKeyboard())
 		return
 	}
 	if amountMinor < 100 {
+		h.log.Warn().Int64("user", tgUserID).Int64("amount_minor", amountMinor).Msg("bot: deposit below minimum")
 		h.reply(chatID, "Минимальная сумма пополнения — 1 ₽.", h.topUpPresetKeyboard())
 		return
 	}
