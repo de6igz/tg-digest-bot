@@ -1765,13 +1765,14 @@ var timezonePresets = []string{
 
 // TimezonePresetKeyboard возвращает список популярных часовых поясов.
 func TimezonePresetKeyboard() *tgbotapi.InlineKeyboardMarkup {
+	now := time.Now()
 	var rows [][]tgbotapi.InlineKeyboardButton
 	for i := 0; i < len(timezonePresets); i += 2 {
 		first := timezonePresets[i]
-		btn1 := tgbotapi.NewInlineKeyboardButtonData(first, "set_tz:"+first)
+		btn1 := tgbotapi.NewInlineKeyboardButtonData(formatTimezonePresetLabel(first, now), "set_tz:"+first)
 		if i+1 < len(timezonePresets) {
 			second := timezonePresets[i+1]
-			btn2 := tgbotapi.NewInlineKeyboardButtonData(second, "set_tz:"+second)
+			btn2 := tgbotapi.NewInlineKeyboardButtonData(formatTimezonePresetLabel(second, now), "set_tz:"+second)
 			rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn1, btn2))
 		} else {
 			rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn1))
@@ -1779,6 +1780,32 @@ func TimezonePresetKeyboard() *tgbotapi.InlineKeyboardMarkup {
 	}
 	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	return &markup
+}
+
+func formatTimezonePresetLabel(name string, ref time.Time) string {
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return name
+	}
+	local := ref.In(loc)
+	_, offset := local.Zone()
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+	}
+	absOffset := offset
+	if absOffset < 0 {
+		absOffset = -absOffset
+	}
+	hours := absOffset / 3600
+	minutes := (absOffset % 3600) / 60
+	var offsetText string
+	if minutes == 0 {
+		offsetText = fmt.Sprintf("%02d", hours)
+	} else {
+		offsetText = fmt.Sprintf("%02d:%02d", hours, minutes)
+	}
+	return fmt.Sprintf("%s (%s, GMT%s%s)", name, local.Format("15:04"), sign, offsetText)
 }
 
 // ParseLocalTime парсит время формата ЧЧ:ММ.
