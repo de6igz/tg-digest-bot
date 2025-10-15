@@ -64,9 +64,15 @@ func (p *Postgres) connCtxWithParent(ctx context.Context) (context.Context, cont
 }
 
 // UpsertByTGID реализует domain.UserRepo.
-func (p *Postgres) UpsertByTGID(tgUserID int64, locale, tz string) (domain.User, bool, error) {
+func (p *Postgres) UpsertByTGID(profile domain.TelegramProfile) (domain.User, bool, error) {
 	ctx, cancel := p.connCtx()
 	defer cancel()
+
+	locale := strings.TrimSpace(profile.Locale)
+	timezone := strings.TrimSpace(profile.Timezone)
+	firstNameValue := strings.TrimSpace(profile.FirstName)
+	lastNameValue := strings.TrimSpace(profile.LastName)
+	usernameValue := strings.TrimSpace(profile.Username)
 
 	for attempt := 0; attempt < referralRetryMax; attempt++ {
 		code, err := generateReferralCode()
@@ -82,18 +88,22 @@ func (p *Postgres) UpsertByTGID(tgUserID int64, locale, tz string) (domain.User,
 		}
 
 		var (
-			user       domain.User
-			manualDate sql.NullTime
-			referredBy sql.NullInt64
-			created    bool
+			user         domain.User
+			manualDate   sql.NullTime
+			referredBy   sql.NullInt64
+			tzValue      sql.NullString
+			firstNameSQL sql.NullString
+			lastNameSQL  sql.NullString
+			usernameSQL  sql.NullString
+			created      bool
 		)
 		start = time.Now()
 		err = tx.QueryRow(ctx, `
-INSERT INTO users (tg_user_id, locale, tz, referral_code)
-VALUES ($1, COALESCE(NULLIF($2,''),'ru-RU'), COALESCE(NULLIF($3,''),'Europe/Amsterdam'), $4)
-ON CONFLICT (tg_user_id) DO UPDATE SET locale = EXCLUDED.locale, tz = EXCLUDED.tz, updated_at = now()
-RETURNING id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by, (xmax = 0) AS inserted
-`, tgUserID, locale, tz, code).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy, &created)
+INSERT INTO users (tg_user_id, locale, tz, first_name, last_name, username, is_bot, referral_code)
+VALUES ($1, COALESCE(NULLIF($2,''),'ru-RU'), NULLIF($3,''), NULLIF($4,''), NULLIF($5,''), NULLIF($6,''), $7, $8)
+ON CONFLICT (tg_user_id) DO UPDATE SET locale = EXCLUDED.locale, tz = COALESCE(EXCLUDED.tz, users.tz), first_name = EXCLUDED.first_name, last_name = EXCLUDED.last_name, username = EXCLUDED.username, is_bot = EXCLUDED.is_bot, updated_at = now()
+RETURNING id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by, first_name, last_name, username, is_bot, (xmax = 0) AS inserted
+`, profile.TGUserID, locale, timezone, firstNameValue, lastNameValue, usernameValue, profile.IsBot, code).Scan(&user.ID, &user.TGUserID, &user.Locale, &tzValue, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy, &firstNameSQL, &lastNameSQL, &usernameSQL, &user.IsBot, &created)
 		metrics.ObserveNetworkRequest("postgres", "users_upsert", "users", start, err)
 		if err != nil {
 			_ = tx.Rollback(ctx)
@@ -109,6 +119,18 @@ RETURNING id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, 
 		if referredBy.Valid {
 			id := referredBy.Int64
 			user.ReferredByID = &id
+		}
+		if tzValue.Valid {
+			user.Timezone = tzValue.String
+		}
+		if firstNameSQL.Valid {
+			user.FirstName = firstNameSQL.String
+		}
+		if lastNameSQL.Valid {
+			user.LastName = lastNameSQL.String
+		}
+		if usernameSQL.Valid {
+			user.Username = usernameSQL.String
 		}
 		start = time.Now()
 		err = tx.Commit(ctx)
@@ -131,11 +153,15 @@ func (p *Postgres) GetByTGID(tgUserID int64) (domain.User, error) {
 	var (
 		manualDate sql.NullTime
 		referredBy sql.NullInt64
+		tzValue    sql.NullString
+		firstName  sql.NullString
+		lastName   sql.NullString
+		username   sql.NullString
 	)
 	err := p.pool.QueryRow(ctx, `
-SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by
+SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by, first_name, last_name, username, is_bot
 FROM users WHERE tg_user_id=$1
-`, tgUserID).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy)
+`, tgUserID).Scan(&user.ID, &user.TGUserID, &user.Locale, &tzValue, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy, &firstName, &lastName, &username, &user.IsBot)
 	metrics.ObserveNetworkRequest("postgres", "users_get_by_tgid", "users", start, err)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, fmt.Errorf("user not found")
@@ -148,6 +174,18 @@ FROM users WHERE tg_user_id=$1
 		id := referredBy.Int64
 		user.ReferredByID = &id
 	}
+	if tzValue.Valid {
+		user.Timezone = tzValue.String
+	}
+	if firstName.Valid {
+		user.FirstName = firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = lastName.String
+	}
+	if username.Valid {
+		user.Username = username.String
+	}
 	return user, err
 }
 
@@ -159,7 +197,7 @@ func (p *Postgres) ListForDailyTime(now time.Time) ([]domain.User, error) {
 
 	start := time.Now()
 	rows, err := p.pool.Query(ctx, `
-SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by
+SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by, first_name, last_name, username, is_bot
 FROM users WHERE daily_time IS NOT NULL
 `)
 	metrics.ObserveNetworkRequest("postgres", "users_list_for_daily_time", "users", start, err)
@@ -173,8 +211,12 @@ FROM users WHERE daily_time IS NOT NULL
 		var (
 			manualDate sql.NullTime
 			referredBy sql.NullInt64
+			tzValue    sql.NullString
+			firstName  sql.NullString
+			lastName   sql.NullString
+			username   sql.NullString
 		)
-		if err := rows.Scan(&u.ID, &u.TGUserID, &u.Locale, &u.Timezone, &u.DailyTime, &u.CreatedAt, &u.UpdatedAt, &u.Role, &u.ManualRequestsTotal, &u.ManualRequestsToday, &manualDate, &u.ReferralCode, &u.ReferralsCount, &referredBy); err != nil {
+		if err := rows.Scan(&u.ID, &u.TGUserID, &u.Locale, &tzValue, &u.DailyTime, &u.CreatedAt, &u.UpdatedAt, &u.Role, &u.ManualRequestsTotal, &u.ManualRequestsToday, &manualDate, &u.ReferralCode, &u.ReferralsCount, &referredBy, &firstName, &lastName, &username, &u.IsBot); err != nil {
 			return nil, err
 		}
 		if manualDate.Valid {
@@ -184,6 +226,18 @@ FROM users WHERE daily_time IS NOT NULL
 		if referredBy.Valid {
 			id := referredBy.Int64
 			u.ReferredByID = &id
+		}
+		if tzValue.Valid {
+			u.Timezone = tzValue.String
+		}
+		if firstName.Valid {
+			u.FirstName = firstName.String
+		}
+		if lastName.Valid {
+			u.LastName = lastName.String
+		}
+		if username.Valid {
+			u.Username = username.String
 		}
 		users = append(users, u)
 	}
@@ -219,6 +273,24 @@ func (p *Postgres) UpdateDailyTime(userID int64, daily time.Time) error {
 	return err
 }
 
+// UpdateTimezone обновляет часовой пояс пользователя.
+func (p *Postgres) UpdateTimezone(userID int64, timezone string) error {
+	ctx, cancel := p.connCtx()
+	defer cancel()
+
+	var tzArg any
+	if strings.TrimSpace(timezone) == "" {
+		tzArg = nil
+	} else {
+		tzArg = timezone
+	}
+
+	start := time.Now()
+	_, err := p.pool.Exec(ctx, `UPDATE users SET tz=$2, updated_at=now() WHERE id=$1`, userID, tzArg)
+	metrics.ObserveNetworkRequest("postgres", "users_update_timezone", "users", start, err)
+	return err
+}
+
 // DeleteUserData удаляет данные пользователя.
 func (p *Postgres) DeleteUserData(userID int64) error {
 	ctx, cancel := p.connCtx()
@@ -246,13 +318,14 @@ func (p *Postgres) ReserveManualRequest(userID int64, now time.Time) (domain.Man
 	var (
 		user       domain.User
 		manualDate sql.NullTime
+		tzValue    sql.NullString
 	)
 
 	start = time.Now()
 	err = tx.QueryRow(ctx, `
 SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date
 FROM users WHERE id=$1 FOR UPDATE
-`, userID).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate)
+`, userID).Scan(&user.ID, &user.TGUserID, &user.Locale, &tzValue, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate)
 	metrics.ObserveNetworkRequest("postgres", "users_get_for_update", "users", start, err)
 	if err != nil {
 		return domain.ManualRequestState{}, err
@@ -260,6 +333,9 @@ FROM users WHERE id=$1 FOR UPDATE
 	if manualDate.Valid {
 		ts := manualDate.Time
 		user.ManualRequestsDate = &ts
+	}
+	if tzValue.Valid {
+		user.Timezone = tzValue.String
 	}
 
 	plan := user.Plan()
@@ -348,13 +424,17 @@ func (p *Postgres) ApplyReferral(code string, newUserID int64) (domain.ReferralR
 		user       domain.User
 		manualDate sql.NullTime
 		referredBy sql.NullInt64
+		tzValue    sql.NullString
+		firstName  sql.NullString
+		lastName   sql.NullString
+		username   sql.NullString
 	)
 
 	start = time.Now()
 	err = tx.QueryRow(ctx, `
-SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by
+SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by, first_name, last_name, username, is_bot
 FROM users WHERE id=$1 FOR UPDATE
-`, newUserID).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy)
+`, newUserID).Scan(&user.ID, &user.TGUserID, &user.Locale, &tzValue, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy, &firstName, &lastName, &username, &user.IsBot)
 	metrics.ObserveNetworkRequest("postgres", "users_get_for_update", "users", start, err)
 	if err != nil {
 		return domain.ReferralResult{}, err
@@ -366,6 +446,18 @@ FROM users WHERE id=$1 FOR UPDATE
 	if referredBy.Valid {
 		id := referredBy.Int64
 		user.ReferredByID = &id
+	}
+	if tzValue.Valid {
+		user.Timezone = tzValue.String
+	}
+	if firstName.Valid {
+		user.FirstName = firstName.String
+	}
+	if lastName.Valid {
+		user.LastName = lastName.String
+	}
+	if username.Valid {
+		user.Username = username.String
 	}
 
 	normalized := strings.ToUpper(strings.TrimSpace(code))
@@ -383,13 +475,17 @@ FROM users WHERE id=$1 FOR UPDATE
 		referrer      domain.User
 		refManualDate sql.NullTime
 		refReferredBy sql.NullInt64
+		refTZ         sql.NullString
+		refFirstName  sql.NullString
+		refLastName   sql.NullString
+		refUsername   sql.NullString
 	)
 
 	start = time.Now()
 	err = tx.QueryRow(ctx, `
-SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by
+SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by, first_name, last_name, username, is_bot
 FROM users WHERE referral_code=$1 FOR UPDATE
-`, normalized).Scan(&referrer.ID, &referrer.TGUserID, &referrer.Locale, &referrer.Timezone, &referrer.DailyTime, &referrer.CreatedAt, &referrer.UpdatedAt, &referrer.Role, &referrer.ManualRequestsTotal, &referrer.ManualRequestsToday, &refManualDate, &referrer.ReferralCode, &referrer.ReferralsCount, &refReferredBy)
+`, normalized).Scan(&referrer.ID, &referrer.TGUserID, &referrer.Locale, &refTZ, &referrer.DailyTime, &referrer.CreatedAt, &referrer.UpdatedAt, &referrer.Role, &referrer.ManualRequestsTotal, &referrer.ManualRequestsToday, &refManualDate, &referrer.ReferralCode, &referrer.ReferralsCount, &refReferredBy, &refFirstName, &refLastName, &refUsername, &referrer.IsBot)
 	metrics.ObserveNetworkRequest("postgres", "users_get_by_ref_code", "users", start, err)
 	if errors.Is(err, pgx.ErrNoRows) {
 		start = time.Now()
@@ -410,6 +506,18 @@ FROM users WHERE referral_code=$1 FOR UPDATE
 	if refReferredBy.Valid {
 		id := refReferredBy.Int64
 		referrer.ReferredByID = &id
+	}
+	if refTZ.Valid {
+		referrer.Timezone = refTZ.String
+	}
+	if refFirstName.Valid {
+		referrer.FirstName = refFirstName.String
+	}
+	if refLastName.Valid {
+		referrer.LastName = refLastName.String
+	}
+	if refUsername.Valid {
+		referrer.Username = refUsername.String
 	}
 	if referrer.ID == user.ID {
 		start = time.Now()
@@ -456,9 +564,9 @@ FROM users WHERE referral_code=$1 FOR UPDATE
 
 	start = time.Now()
 	err = tx.QueryRow(ctx, `
-SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by
+SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by, first_name, last_name, username, is_bot
 FROM users WHERE id=$1
-`, user.ID).Scan(&user.ID, &user.TGUserID, &user.Locale, &user.Timezone, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy)
+`, user.ID).Scan(&user.ID, &user.TGUserID, &user.Locale, &tzValue, &user.DailyTime, &user.CreatedAt, &user.UpdatedAt, &user.Role, &user.ManualRequestsTotal, &user.ManualRequestsToday, &manualDate, &user.ReferralCode, &user.ReferralsCount, &referredBy, &firstName, &lastName, &username, &user.IsBot)
 	metrics.ObserveNetworkRequest("postgres", "users_get_after_referral", "users", start, err)
 	if err != nil {
 		return domain.ReferralResult{}, err
@@ -475,12 +583,32 @@ FROM users WHERE id=$1
 	} else {
 		user.ReferredByID = nil
 	}
+	if tzValue.Valid {
+		user.Timezone = tzValue.String
+	} else {
+		user.Timezone = ""
+	}
+	if firstName.Valid {
+		user.FirstName = firstName.String
+	} else {
+		user.FirstName = ""
+	}
+	if lastName.Valid {
+		user.LastName = lastName.String
+	} else {
+		user.LastName = ""
+	}
+	if username.Valid {
+		user.Username = username.String
+	} else {
+		user.Username = ""
+	}
 
 	start = time.Now()
 	err = tx.QueryRow(ctx, `
-SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by
+SELECT id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, manual_requests_total, manual_requests_today, manual_requests_date, referral_code, referrals_count, referred_by, first_name, last_name, username, is_bot
 FROM users WHERE id=$1
-`, referrer.ID).Scan(&referrer.ID, &referrer.TGUserID, &referrer.Locale, &referrer.Timezone, &referrer.DailyTime, &referrer.CreatedAt, &referrer.UpdatedAt, &referrer.Role, &referrer.ManualRequestsTotal, &referrer.ManualRequestsToday, &refManualDate, &referrer.ReferralCode, &referrer.ReferralsCount, &refReferredBy)
+`, referrer.ID).Scan(&referrer.ID, &referrer.TGUserID, &referrer.Locale, &refTZ, &referrer.DailyTime, &referrer.CreatedAt, &referrer.UpdatedAt, &referrer.Role, &referrer.ManualRequestsTotal, &referrer.ManualRequestsToday, &refManualDate, &referrer.ReferralCode, &referrer.ReferralsCount, &refReferredBy, &refFirstName, &refLastName, &refUsername, &referrer.IsBot)
 	metrics.ObserveNetworkRequest("postgres", "users_get_referrer_after_update", "users", start, err)
 	if err != nil {
 		return domain.ReferralResult{}, err
@@ -496,6 +624,26 @@ FROM users WHERE id=$1
 		referrer.ReferredByID = &id
 	} else {
 		referrer.ReferredByID = nil
+	}
+	if refTZ.Valid {
+		referrer.Timezone = refTZ.String
+	} else {
+		referrer.Timezone = ""
+	}
+	if refFirstName.Valid {
+		referrer.FirstName = refFirstName.String
+	} else {
+		referrer.FirstName = ""
+	}
+	if refLastName.Valid {
+		referrer.LastName = refLastName.String
+	} else {
+		referrer.LastName = ""
+	}
+	if refUsername.Valid {
+		referrer.Username = refUsername.String
+	} else {
+		referrer.Username = ""
 	}
 
 	start = time.Now()

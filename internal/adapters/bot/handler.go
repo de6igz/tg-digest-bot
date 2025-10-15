@@ -36,6 +36,7 @@ type Handler struct {
 	mu          sync.Mutex
 	pendingDrop map[int64]time.Time
 	pendingTime map[int64]struct{}
+	pendingTZ   map[int64]struct{}
 	offers      map[string]subscriptionOffer
 }
 
@@ -53,6 +54,7 @@ func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Se
 		maxDigest:   maxDigest,
 		pendingDrop: make(map[int64]time.Time),
 		pendingTime: make(map[int64]struct{}),
+		pendingTZ:   make(map[int64]struct{}),
 		offers:      defaultSubscriptionOffers(),
 	}
 }
@@ -69,6 +71,9 @@ func (h *Handler) HandleUpdate(ctx context.Context, upd tgbotapi.Update) {
 func (h *Handler) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 	if msg.From != nil && !strings.HasPrefix(text, "/") {
+		if h.tryHandleTimezoneInput(ctx, msg.Chat.ID, msg.From.ID, text) {
+			return
+		}
 		if h.tryHandleScheduleInput(ctx, msg.Chat.ID, msg.From.ID, text) {
 			return
 		}
@@ -78,6 +83,13 @@ func (h *Handler) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 		h.handleStart(ctx, msg)
 	case strings.HasPrefix(text, "/help"):
 		h.handleHelp(msg.Chat.ID)
+	case strings.HasPrefix(text, "/timezone"):
+		if msg.From == nil {
+			h.reply(msg.Chat.ID, "Не удалось определить пользователя", nil)
+			return
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(text, "/timezone"))
+		h.handleTimezone(ctx, msg.Chat.ID, msg.From.ID, payload)
 	case strings.HasPrefix(text, "/balance"):
 		if msg.From == nil {
 			h.reply(msg.Chat.ID, "Не удалось определить пользователя", nil)
@@ -144,8 +156,31 @@ func (h *Handler) handleStart(ctx context.Context, msg *tgbotapi.Message) {
 		h.reply(msg.Chat.ID, "Не удалось определить пользователя", nil)
 		return
 	}
-	locale := msg.From.LanguageCode
-	user, created, err := h.users.UpsertByTGID(msg.From.ID, locale, "")
+	locale := strings.TrimSpace(msg.From.LanguageCode)
+	firstName := strings.TrimSpace(msg.From.FirstName)
+	lastName := strings.TrimSpace(msg.From.LastName)
+	username := strings.TrimSpace(msg.From.UserName)
+	if msg.Chat != nil {
+		if firstName == "" {
+			firstName = strings.TrimSpace(msg.Chat.FirstName)
+		}
+		if lastName == "" {
+			lastName = strings.TrimSpace(msg.Chat.LastName)
+		}
+		if username == "" {
+			username = strings.TrimSpace(msg.Chat.UserName)
+		}
+	}
+	profile := domain.TelegramProfile{
+		TGUserID:  msg.From.ID,
+		Locale:    locale,
+		Timezone:  "",
+		FirstName: firstName,
+		LastName:  lastName,
+		Username:  username,
+		IsBot:     msg.From.IsBot,
+	}
+	user, created, err := h.users.UpsertByTGID(profile)
 	if err != nil {
 		h.reply(msg.Chat.ID, fmt.Sprintf("Ошибка сохранения профиля: %v", err), nil)
 		return
@@ -178,6 +213,10 @@ func (h *Handler) handleStart(ctx context.Context, msg *tgbotapi.Message) {
 			continue
 		}
 		h.reply(msg.Chat.ID, section, nil)
+	}
+
+	if strings.TrimSpace(user.Timezone) == "" {
+		h.promptTimezone(msg.Chat.ID, msg.From.ID, user.Timezone)
 	}
 
 	if referralResult.ReferrerUpgraded && referralResult.Referrer != nil {
@@ -746,6 +785,11 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 	case strings.HasPrefix(data, "set_time:"):
 		value := strings.TrimPrefix(data, "set_time:")
 		h.handleSetTime(ctx, cb.Message.Chat.ID, cb.From.ID, value)
+	case data == "set_timezone":
+		h.handleTimezone(ctx, cb.Message.Chat.ID, cb.From.ID, "")
+	case strings.HasPrefix(data, "set_tz:"):
+		value := strings.TrimPrefix(data, "set_tz:")
+		h.handleSetTimezone(ctx, cb.Message.Chat.ID, cb.From.ID, value)
 	case strings.HasPrefix(data, "mute:"):
 		id := parseID(data)
 		h.toggleMute(ctx, cb.Message.Chat.ID, cb.From.ID, id, true)
@@ -764,6 +808,91 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 	if err != nil {
 		h.log.Error().Err(err).Msg("не удалось ответить на callback")
 	}
+}
+
+func (h *Handler) handleTimezone(ctx context.Context, chatID, tgUserID int64, payload string) {
+	payload = strings.TrimSpace(payload)
+	if payload != "" {
+		h.handleSetTimezone(ctx, chatID, tgUserID, payload)
+		return
+	}
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.reply(chatID, fmt.Sprintf("Не удалось получить профиль: %v", err), nil)
+		return
+	}
+	h.promptTimezone(chatID, tgUserID, user.Timezone)
+}
+
+func (h *Handler) handleSetTimezone(ctx context.Context, chatID, tgUserID int64, timezone string) {
+	tz := strings.TrimSpace(strings.ReplaceAll(timezone, " ", "_"))
+	if tz == "" {
+		h.reply(chatID, "Отправьте название часового пояса, например Europe/Moscow", nil)
+		h.setPendingTimezone(tgUserID)
+		return
+	}
+	if err := h.scheduleUC.UpdateTimezone(ctx, tgUserID, tz); err != nil {
+		if errors.Is(err, schedule.ErrInvalidTimezone) {
+			h.reply(chatID, "Не удалось распознать часовой пояс. Используйте формат Region/City, например Europe/Moscow, или выберите его в меню ниже.", nil)
+			h.setPendingTimezone(tgUserID)
+			return
+		}
+		h.reply(chatID, fmt.Sprintf("Не удалось сохранить часовой пояс: %v", err), nil)
+		return
+	}
+	updatedTimezone := tz
+	if user, err := h.users.GetByTGID(tgUserID); err == nil && strings.TrimSpace(user.Timezone) != "" {
+		updatedTimezone = user.Timezone
+	} else if err != nil {
+		h.log.Error().Err(err).Int64("user", tgUserID).Msg("не удалось обновить профиль после смены часового пояса")
+	}
+	h.clearPendingTimezone(tgUserID)
+	message := fmt.Sprintf("Часовой пояс установлен: %s. Проверьте расписание через /schedule.", updatedTimezone)
+	h.reply(chatID, message, nil)
+}
+
+func (h *Handler) tryHandleTimezoneInput(ctx context.Context, chatID, tgUserID int64, value string) bool {
+	h.mu.Lock()
+	_, pending := h.pendingTZ[tgUserID]
+	h.mu.Unlock()
+	if !pending {
+		return false
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		h.reply(chatID, "Отправьте название часового пояса, например Europe/Moscow", nil)
+		return true
+	}
+	h.handleSetTimezone(ctx, chatID, tgUserID, trimmed)
+	return true
+}
+
+func (h *Handler) setPendingTimezone(tgUserID int64) {
+	h.mu.Lock()
+	h.pendingTZ[tgUserID] = struct{}{}
+	h.mu.Unlock()
+}
+
+func (h *Handler) clearPendingTimezone(tgUserID int64) {
+	h.mu.Lock()
+	delete(h.pendingTZ, tgUserID)
+	h.mu.Unlock()
+}
+
+func (h *Handler) promptTimezone(chatID, tgUserID int64, current string) {
+	h.setPendingTimezone(tgUserID)
+	lines := []string{"🌍 Выберите ваш часовой пояс."}
+	if tz := strings.TrimSpace(current); tz != "" {
+		lines = append(lines, fmt.Sprintf("Сейчас установлен: %s.", tz))
+	} else {
+		lines = append(lines, "Он пока не установлен.")
+	}
+	lines = append(lines,
+		"",
+		"Выберите вариант из списка ниже или отправьте название вручную, например Europe/Moscow.",
+		"Также можно указать его командой /timezone Europe/Moscow.",
+	)
+	h.reply(chatID, strings.Join(lines, "\n"), TimezonePresetKeyboard())
 }
 
 func (h *Handler) handleSchedule(chatID, tgUserID int64) {
@@ -1323,6 +1452,7 @@ func (h *Handler) mainKeyboard() *tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("🛒 Подписка", "billing_subscribe"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🌍 Часовой пояс", "set_timezone"),
 			tgbotapi.NewInlineKeyboardButtonData("ℹ️ Помощь", "help_menu"),
 		),
 	)
@@ -1346,12 +1476,40 @@ func (h *Handler) mainPlanLines(plan domain.UserPlan) (string, string) {
 	return channel, manual
 }
 
+func userDisplayName(user domain.User) string {
+	username := strings.TrimSpace(user.Username)
+	if username != "" {
+		return username
+	}
+	first := strings.TrimSpace(user.FirstName)
+	last := strings.TrimSpace(user.LastName)
+	switch {
+	case first == "" && last == "":
+		return ""
+	case first == "":
+		return last
+	case last == "":
+		return first
+	default:
+		return fmt.Sprintf("%s %s", first, last)
+	}
+}
+
 func (h *Handler) buildStartSections(user domain.User) []string {
 	plan := user.Plan()
 	channelLine, manualLine := h.mainPlanLines(plan)
 
-	intro := []string{
-		"👋 Добро пожаловать в TG Digest Bot!",
+	greeting := []string{}
+	if name := userDisplayName(user); name != "" {
+		greeting = append(greeting,
+			fmt.Sprintf("👋 Привет, %s!", name),
+			"Добро пожаловать в TG Digest Bot!",
+		)
+	} else {
+		greeting = append(greeting, "👋 Добро пожаловать в TG Digest Bot!")
+	}
+
+	intro := append(greeting,
 		"",
 		fmt.Sprintf("Ваш текущий тариф: %s.", plan.Name),
 		"",
@@ -1360,7 +1518,7 @@ func (h *Handler) buildStartSections(user domain.User) []string {
 		fmt.Sprintf("• %s", manualLine),
 		"",
 		"Используйте кнопки под сообщением, чтобы сразу перейти к нужному действию.",
-	}
+	)
 
 	quickStart := []string{
 		"🚀 Быстрый старт:",
@@ -1369,6 +1527,7 @@ func (h *Handler) buildStartSections(user domain.User) []string {
 		"• 📰 Получите дайджест за 24 часа кнопкой «Дайджест» или командой /digest_now.",
 		"• 📌 Попробуйте тематический дайджест через «Дайджест по тегам» или /digest_tag новости.",
 		"• 🗓 Настройте автоматическую рассылку кнопкой «Расписание» или /schedule 21:30.",
+		"• 🌍 Укажите часовой пояс кнопкой «Часовой пояс» или командой /timezone Europe/Moscow.",
 	}
 
 	var sections []string
@@ -1543,6 +1702,7 @@ func (h *Handler) buildHelpMessage() string {
 		"Расписание и данные:",
 		"• /schedule — открыть выбор времени.",
 		"• /schedule 21:30 — задать своё время рассылки.",
+		"• /timezone Europe/Moscow — выбрать часовой пояс или использовать меню бота.",
 		"• /clear_data — удалить аккаунт и все сохранённые данные.",
 		"",
 		"Подсказка: используйте меню под сообщением, чтобы быстро перейти к нужному действию.",
@@ -1575,6 +1735,47 @@ func SchedulePresetKeyboard() *tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("19:00", "set_time:19:00"),
 			tgbotapi.NewInlineKeyboardButtonData("21:00", "set_time:21:00"),
 		),
+	}
+	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	return &markup
+}
+
+var timezonePresets = []string{
+	"Europe/Kaliningrad",
+	"Europe/Moscow",
+	"Europe/Samara",
+	"Asia/Yekaterinburg",
+	"Asia/Omsk",
+	"Asia/Novosibirsk",
+	"Asia/Krasnoyarsk",
+	"Asia/Irkutsk",
+	"Asia/Yakutsk",
+	"Asia/Vladivostok",
+	"Asia/Magadan",
+	"Asia/Kamchatka",
+	"Europe/Kiev",
+	"Europe/Minsk",
+	"Asia/Almaty",
+	"Asia/Bishkek",
+	"Asia/Tbilisi",
+	"Asia/Yerevan",
+	"Asia/Tashkent",
+	"UTC",
+}
+
+// TimezonePresetKeyboard возвращает список популярных часовых поясов.
+func TimezonePresetKeyboard() *tgbotapi.InlineKeyboardMarkup {
+	var rows [][]tgbotapi.InlineKeyboardButton
+	for i := 0; i < len(timezonePresets); i += 2 {
+		first := timezonePresets[i]
+		btn1 := tgbotapi.NewInlineKeyboardButtonData(first, "set_tz:"+first)
+		if i+1 < len(timezonePresets) {
+			second := timezonePresets[i+1]
+			btn2 := tgbotapi.NewInlineKeyboardButtonData(second, "set_tz:"+second)
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn1, btn2))
+		} else {
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(btn1))
+		}
 	}
 	markup := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	return &markup

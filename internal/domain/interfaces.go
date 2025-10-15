@@ -40,10 +40,11 @@ type DigestService interface {
 
 // UserRepo управляет пользователями.
 type UserRepo interface {
-	UpsertByTGID(tgUserID int64, locale, tz string) (User, bool, error)
+	UpsertByTGID(profile TelegramProfile) (User, bool, error)
 	GetByTGID(tgUserID int64) (User, error)
 	ListForDailyTime(now time.Time) ([]User, error)
 	UpdateDailyTime(userID int64, daily time.Time) error
+	UpdateTimezone(userID int64, timezone string) error
 	DeleteUserData(userID int64) error
 	ReserveManualRequest(userID int64, now time.Time) (ManualRequestState, error)
 	ApplyReferral(code string, newUserID int64) (ReferralResult, error)
