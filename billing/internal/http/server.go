@@ -279,16 +279,20 @@ func (s *Server) handleRegisterIncomingPayment(c echo.Context) error {
 
 func (s *Server) handleCreateSBPInvoice(c echo.Context) error {
 	if s.sbpService == nil {
+		s.log.Error().Msg("billing: sbp service not configured")
 		return writeError(c, http.StatusServiceUnavailable, "sbp_not_configured", "sbp service is not available")
 	}
 	var req createSBPInvoiceRequest
 	if err := c.Bind(&req); err != nil {
+		s.log.Error().Err(err).Msg("billing: invalid sbp invoice request body")
 		return writeError(c, http.StatusBadRequest, "invalid_request", "invalid request body")
 	}
 	if req.UserID == 0 {
+		s.log.Error().Msg("billing: sbp invoice request missing user id")
 		return writeError(c, http.StatusBadRequest, "invalid_request", "user_id is required")
 	}
 	if req.Amount <= 0 {
+		s.log.Error().Int64("user", req.UserID).Int64("amount", req.Amount).Msg("billing: sbp invoice amount must be positive")
 		return writeError(c, http.StatusBadRequest, "invalid_request", "amount_minor must be positive")
 	}
 
