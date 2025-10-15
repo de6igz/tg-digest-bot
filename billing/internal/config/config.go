@@ -8,8 +8,9 @@ import (
 )
 
 type Config struct {
-	Port  int    `envconfig:"PORT" default:"8082"`
-	PGDSN string `envconfig:"BILLING_PG_DSN"`
+	Port     int    `envconfig:"PORT" default:"8082"`
+	PGDSN    string `envconfig:"BILLING_PG_DSN"`
+	APIToken string `envconfig:"BILLING_API_TOKEN"`
 
 	Server struct {
 		ShutdownTimeout time.Duration `envconfig:"SERVER_SHUTDOWN_TIMEOUT" default:"500s"`

@@ -28,6 +28,9 @@ func main() {
 	if cfg.PGDSN == "" {
 		log.Fatal().Msg("billing: BILLING_PG_DSN is required")
 	}
+	if cfg.APIToken == "" {
+		log.Fatal().Msg("billing: BILLING_API_TOKEN is required")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -69,6 +72,8 @@ func main() {
 	if sbpService != nil {
 		opts = append(opts, httpapi.WithSBPService(sbpService, cfg.Tochka.WebhookSecret, webhookKey))
 	}
+	opts = append(opts, httpapi.WithAuthToken(cfg.APIToken))
+
 	server := httpapi.NewServer(billingRepo, opts...)
 
 	srv := &http.Server{
