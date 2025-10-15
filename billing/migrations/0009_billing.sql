@@ -40,6 +40,11 @@ CREATE TABLE billing_payments (
     completed_at     TIMESTAMPTZ
 );
 
+
+
+ALTER TABLE billing_invoices
+add column qr_id TEXT;
+
 CREATE INDEX billing_payments_account_id_idx ON billing_payments(account_id);
 CREATE INDEX billing_payments_invoice_id_idx ON billing_payments(invoice_id);
 

@@ -87,6 +87,7 @@ type jwtEnvelope struct {
 // замените реализацию ниже.
 var AmountFromString = func(s string) (Amount, error) {
 	var a Amount
+	a.Value = s
 	// no-op: оставьте нулевым, если не готовы мапить здесь.
 	// Пример (раскомментируйте и адаптируйте):
 	// return NewAmountFromString(s) // ваш конструктор

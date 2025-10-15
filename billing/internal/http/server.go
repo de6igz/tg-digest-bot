@@ -66,6 +66,7 @@ type createInvoiceRequest struct {
 	Description    string         `json:"description"`
 	Metadata       map[string]any `json:"metadata"`
 	IdempotencyKey string         `json:"idempotency_key"`
+	QrId           *string        `json:"qr_id"`
 }
 
 type registerPaymentRequest struct {

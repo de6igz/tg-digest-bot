@@ -12,9 +12,9 @@ type Config struct {
 	PGDSN string `envconfig:"BILLING_PG_DSN"`
 
 	Server struct {
-		ShutdownTimeout time.Duration `envconfig:"SERVER_SHUTDOWN_TIMEOUT" default:"5s"`
-		ReadTimeout     time.Duration `envconfig:"SERVER_READ_TIMEOUT" default:"15s"`
-		WriteTimeout    time.Duration `envconfig:"SERVER_WRITE_TIMEOUT" default:"15s"`
+		ShutdownTimeout time.Duration `envconfig:"SERVER_SHUTDOWN_TIMEOUT" default:"500s"`
+		ReadTimeout     time.Duration `envconfig:"SERVER_READ_TIMEOUT" default:"150s"`
+		WriteTimeout    time.Duration `envconfig:"SERVER_WRITE_TIMEOUT" default:"150s"`
 		IdleTimeout     time.Duration `envconfig:"SERVER_IDLE_TIMEOUT" default:"60s"`
 	} `envconfig:""`
 

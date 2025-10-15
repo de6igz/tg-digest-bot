@@ -132,6 +132,7 @@ func (s *Service) CreateInvoiceWithQRCode(ctx context.Context, params CreateInvo
 		Description:    params.Description,
 		Metadata:       metadata,
 		IdempotencyKey: params.IdempotencyKey,
+		QrId:           &qrResponse.QRID,
 	})
 	if err != nil {
 		return CreateInvoiceResult{}, fmt.Errorf("create invoice: %w", err)
@@ -146,9 +147,9 @@ func (s *Service) HandleIncomingPayment(ctx context.Context, notification tochka
 		return domain.Payment{}, fmt.Errorf("webhook missing qr id")
 	}
 
-	// Мы кладём idempotencyKey = QRID в CreateInvoiceWithQRCode (через RegisterQRCode)
+	// Мы кладём qrId = QRID в CreateInvoiceWithQRCode (через RegisterQRCode)
 	// и ожидаем, что по этому ключу найдём нужный invoice.
-	invoice, err := s.billing.GetInvoiceByIdempotencyKey(ctx, notification.QRID)
+	invoice, err := s.billing.GetInvoiceByQrId(ctx, notification.QRID)
 	if err != nil {
 		return domain.Payment{}, fmt.Errorf("invoice lookup: %w", err)
 	}

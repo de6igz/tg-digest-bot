@@ -37,6 +37,7 @@ type Invoice struct {
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
 	PaidAt         *time.Time     `json:"paid_at"`
+	QrId           string         `json:"qr_id"`
 }
 
 type InvoiceSBPMetadata struct {
@@ -69,6 +70,7 @@ type CreateInvoiceParams struct {
 	Description    string         `json:"description"`
 	Metadata       map[string]any `json:"metadata"`
 	IdempotencyKey string         `json:"idempotency_key"`
+	QrId           *string        `json:"qr_id"`
 }
 
 type RegisterIncomingPaymentParams struct {
@@ -94,6 +96,7 @@ type Billing interface {
 	RegisterIncomingPayment(ctx context.Context, params RegisterIncomingPaymentParams) (Payment, error)
 	GetInvoiceByID(ctx context.Context, invoiceID int64) (Invoice, error)
 	GetInvoiceByIdempotencyKey(ctx context.Context, key string) (Invoice, error)
+	GetInvoiceByQrId(ctx context.Context, qrId string) (Invoice, error)
 	ChargeAccount(ctx context.Context, params ChargeAccountParams) (Payment, error)
 }
 

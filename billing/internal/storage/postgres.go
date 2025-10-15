@@ -112,11 +112,11 @@ func (p *Postgres) CreateInvoice(ctx context.Context, params domain.CreateInvoic
 	}
 
 	row := p.pool.QueryRow(ctx, `
-INSERT INTO billing_invoices (account_id, amount, currency, description, metadata, idempotency_key)
-VALUES ($1, $2, $3, NULLIF($4,''), $5, $6)
+INSERT INTO billing_invoices (account_id, amount, currency, description, metadata, idempotency_key,qr_id)
+VALUES ($1, $2, $3, NULLIF($4,''), $5, $6,$7)
 ON CONFLICT (idempotency_key) DO NOTHING
-RETURNING id, account_id, amount, currency, description, metadata, status, idempotency_key, created_at, updated_at, paid_at
-`, params.AccountID, params.Amount.Amount, params.Amount.Currency, params.Description, meta, params.IdempotencyKey)
+RETURNING id, account_id, amount, currency, description, metadata, status, idempotency_key,qr_id, created_at, updated_at, paid_at
+`, params.AccountID, params.Amount.Amount, params.Amount.Currency, params.Description, meta, params.IdempotencyKey, params.QrId)
 	invoice, err := scanInvoice(row)
 	if err == nil {
 		return invoice, nil
@@ -162,10 +162,32 @@ func (p *Postgres) GetInvoiceByIdempotencyKey(ctx context.Context, key string) (
 	defer cancel()
 
 	row := p.pool.QueryRow(ctx, `
-SELECT id, account_id, amount, currency, description, metadata, status, idempotency_key, created_at, updated_at, paid_at
+SELECT id, account_id, amount, currency, description, metadata, status, idempotency_key, created_at, updated_at, paid_at, qr_id
 FROM billing_invoices
 WHERE idempotency_key = $1
 `, key)
+	invoice, err := scanInvoice(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Invoice{}, domain.ErrInvoiceNotFound
+		}
+		return domain.Invoice{}, err
+	}
+	return invoice, nil
+}
+
+func (p *Postgres) GetInvoiceByQrId(ctx context.Context, qrId string) (domain.Invoice, error) {
+	if qrId == "" {
+		return domain.Invoice{}, fmt.Errorf("qrId is required")
+	}
+	ctx, cancel := p.withTimeout(ctx)
+	defer cancel()
+
+	row := p.pool.QueryRow(ctx, `
+SELECT id, account_id, amount, currency, description, metadata, status, idempotency_key, created_at, updated_at, paid_at,qr_id
+FROM billing_invoices
+WHERE qr_id = $1
+`, qrId)
 	invoice, err := scanInvoice(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -457,7 +479,7 @@ FOR UPDATE
 
 func (p *Postgres) lockInvoiceForUpdate(ctx context.Context, tx pgx.Tx, invoiceID int64) (domain.Invoice, error) {
 	row := tx.QueryRow(ctx, `
-SELECT id, account_id, amount, currency, description, metadata, status, idempotency_key, created_at, updated_at, paid_at
+SELECT id, account_id, amount, currency, description, metadata, status, idempotency_key, created_at, updated_at, paid_at, qr_id
 FROM billing_invoices
 WHERE id = $1
 FOR UPDATE
@@ -505,7 +527,7 @@ func scanInvoice(row pgx.Row) (domain.Invoice, error) {
 		invoice  domain.Invoice
 		metadata sql.NullString
 	)
-	err := row.Scan(&invoice.ID, &invoice.AccountID, &invoice.Amount.Amount, &invoice.Amount.Currency, &invoice.Description, &metadata, &invoice.Status, &invoice.IdempotencyKey, &invoice.CreatedAt, &invoice.UpdatedAt, &invoice.PaidAt)
+	err := row.Scan(&invoice.ID, &invoice.AccountID, &invoice.Amount.Amount, &invoice.Amount.Currency, &invoice.Description, &metadata, &invoice.Status, &invoice.IdempotencyKey, &invoice.CreatedAt, &invoice.UpdatedAt, &invoice.PaidAt, &invoice.QrId)
 	if err != nil {
 		return domain.Invoice{}, err
 	}
