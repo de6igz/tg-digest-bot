@@ -130,7 +130,7 @@ func (s *Server) Router() http.Handler {
 		e.Use(s.authMiddleware)
 	}
 
-	e.GET("/swagger/openapi.yaml", s.handleSwagger)
+	//e.GET("/swagger/openapi.yaml", s.handleSwagger)
 
 	// Billing
 	e.POST("/api/v1/accounts/ensure", s.handleEnsureAccount)
@@ -154,12 +154,12 @@ func (s *Server) Router() http.Handler {
 func (s *Server) WebhookRouter() http.Handler {
 	e := s.newEcho()
 
-	if s.sbpService == nil {
-		e.Any("/*", func(c echo.Context) error {
-			return writeError(c, http.StatusNotFound, "not_found", "sbp webhook disabled")
-		})
-		return e
-	}
+	//if s.sbpService == nil {
+	//	e.Any("/*", func(c echo.Context) error {
+	//		return writeError(c, http.StatusNotFound, "not_found", "sbp webhook disabled")
+	//	})
+	//	return e
+	//}
 
 	e.POST("/api/v1/sbp/webhook", s.handleSBPWebhook)
 

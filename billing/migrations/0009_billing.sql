@@ -33,6 +33,7 @@ CREATE TABLE billing_payments (
     amount           BIGINT NOT NULL CHECK (amount > 0),
     currency         TEXT   NOT NULL,
     metadata         JSONB,
+    description text,
     status           TEXT   NOT NULL DEFAULT 'completed' CHECK (status IN ('completed', 'failed')),
     idempotency_key  TEXT   NOT NULL UNIQUE,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
