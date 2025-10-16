@@ -6,6 +6,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 
@@ -79,8 +80,24 @@ func main() {
 					RequestedAt: now,
 					Cause:       domain.DigestCauseScheduled,
 				}
+				job.ID = uuid.NewString()
 				if err := digestQueue.Enqueue(ctx, job); err != nil {
 					log.Error().Err(err).Int64("user", user.TGUserID).Msg("scheduler: не удалось поставить задачу дайджеста")
+					continue
+				}
+				userID := user.ID
+				meta := map[string]any{
+					"job_id":        job.ID,
+					"scheduled_for": scheduledUTC,
+					"requested_at":  job.RequestedAt,
+					"cause":         string(job.Cause),
+				}
+				if err := repoAdapter.RecordBusinessMetric(ctx, domain.BusinessMetric{
+					Event:    domain.BusinessMetricEventDigestScheduled,
+					UserID:   &userID,
+					Metadata: meta,
+				}); err != nil {
+					log.Error().Err(err).Str("event", domain.BusinessMetricEventDigestScheduled).Int64("user", user.TGUserID).Msg("scheduler: не удалось сохранить бизнес-метрику")
 				}
 			}
 		}
