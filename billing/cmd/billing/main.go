@@ -84,6 +84,17 @@ func main() {
 		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
+	var webhookSrv *http.Server
+	if server.HasSBPWebhook() {
+		webhookSrv = &http.Server{
+			Addr:         fmt.Sprintf(":%d", cfg.WebhookPort),
+			Handler:      server.WebhookRouter(),
+			ReadTimeout:  cfg.Server.ReadTimeout,
+			WriteTimeout: cfg.Server.WriteTimeout,
+			IdleTimeout:  cfg.Server.IdleTimeout,
+		}
+	}
+
 	go func() {
 		log.Info().Int("port", cfg.Port).Msg("billing: server started")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -91,11 +102,25 @@ func main() {
 		}
 	}()
 
+	if webhookSrv != nil {
+		go func() {
+			log.Info().Int("port", cfg.WebhookPort).Msg("billing: webhook server started")
+			if err := webhookSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Error().Err(err).Msg("billing: webhook server stopped")
+			}
+		}()
+	}
+
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error().Err(err).Msg("billing: graceful shutdown failed")
+	}
+	if webhookSrv != nil {
+		if err := webhookSrv.Shutdown(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("billing: graceful webhook shutdown failed")
+		}
 	}
 }
 

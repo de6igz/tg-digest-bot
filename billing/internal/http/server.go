@@ -124,19 +124,7 @@ func NewServer(b domain.Billing, opts ...Option) *Server {
 }
 
 func (s *Server) Router() http.Handler {
-	e := echo.New()
-	e.HideBanner = true
-	e.HidePort = true
-	e.HTTPErrorHandler = func(err error, c echo.Context) {
-		if !c.Response().Committed {
-			_ = c.JSON(http.StatusInternalServerError, errorResponse{
-				Error: "internal server error",
-				Code:  "internal_error",
-			})
-		}
-		s.log.Error().Err(err).Msg("http server error")
-	}
-	e.Use(middleware.Recover())
+	e := s.newEcho()
 
 	if s.authToken != "" {
 		e.Use(s.authMiddleware)
@@ -158,8 +146,44 @@ func (s *Server) Router() http.Handler {
 	// SBP
 	if s.sbpService != nil {
 		e.POST("/api/v1/sbp/invoices", s.handleCreateSBPInvoice)
-		e.POST("/api/v1/sbp/webhook", s.handleSBPWebhook)
 	}
+
+	return e
+}
+
+func (s *Server) WebhookRouter() http.Handler {
+	e := s.newEcho()
+
+	if s.sbpService == nil {
+		e.Any("/*", func(c echo.Context) error {
+			return writeError(c, http.StatusNotFound, "not_found", "sbp webhook disabled")
+		})
+		return e
+	}
+
+	e.POST("/api/v1/sbp/webhook", s.handleSBPWebhook)
+
+	return e
+}
+
+func (s *Server) HasSBPWebhook() bool {
+	return s.sbpService != nil
+}
+
+func (s *Server) newEcho() *echo.Echo {
+	e := echo.New()
+	e.HideBanner = true
+	e.HidePort = true
+	e.HTTPErrorHandler = func(err error, c echo.Context) {
+		if !c.Response().Committed {
+			_ = c.JSON(http.StatusInternalServerError, errorResponse{
+				Error: "internal server error",
+				Code:  "internal_error",
+			})
+		}
+		s.log.Error().Err(err).Msg("http server error")
+	}
+	e.Use(middleware.Recover())
 
 	return e
 }
