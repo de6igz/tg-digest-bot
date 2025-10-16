@@ -20,6 +20,7 @@ type Context interface {
 	QueryParam(string) string
 	Bind(any) error
 	JSON(int, any) error
+	Blob(int, string, []byte) error
 	Echo() *Echo
 }
 
@@ -90,6 +91,23 @@ func (e *Echo) GET(path string, h HandlerFunc) {
 
 func (e *Echo) POST(path string, h HandlerFunc) {
 	e.addRoute(http.MethodPost, path, h)
+}
+
+func (e *Echo) Any(path string, h HandlerFunc) {
+	methods := []string{
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+		http.MethodConnect,
+		http.MethodOptions,
+		http.MethodTrace,
+	}
+	for _, method := range methods {
+		e.addRoute(method, path, h)
+	}
 }
 
 func (e *Echo) addRoute(method, path string, h HandlerFunc) {
@@ -182,6 +200,18 @@ func (c *context) JSON(code int, v any) error {
 	}
 	c.response.WriteHeader(code)
 	return json.NewEncoder(c.response.Writer).Encode(v)
+}
+
+func (c *context) Blob(code int, contentType string, b []byte) error {
+	if !c.response.Committed {
+		c.response.Writer.Header().Set("Content-Type", contentType)
+	}
+	c.response.WriteHeader(code)
+	if len(b) == 0 {
+		return nil
+	}
+	_, err := c.response.Writer.Write(b)
+	return err
 }
 
 func (c *context) Echo() *Echo {
