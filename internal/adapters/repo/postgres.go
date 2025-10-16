@@ -24,6 +24,8 @@ type Postgres struct {
 	pool *pgxpool.Pool
 }
 
+var _ domain.BusinessMetricRepo = (*Postgres)(nil)
+
 const (
 	referralAlphabet   = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 	referralCodeLength = 8
@@ -61,6 +63,49 @@ func (p *Postgres) connCtxWithParent(ctx context.Context) (context.Context, cont
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, 5*time.Second)
+}
+
+func (p *Postgres) saveBusinessMetric(ctx context.Context, metric domain.BusinessMetric) error {
+	if metric.Event == "" {
+		return nil
+	}
+
+	if metric.OccurredAt.IsZero() {
+		metric.OccurredAt = time.Now().UTC()
+	}
+
+	ctx, cancel := p.connCtxWithParent(ctx)
+	defer cancel()
+
+	var userID sql.NullInt64
+	if metric.UserID != nil {
+		userID = sql.NullInt64{Int64: *metric.UserID, Valid: true}
+	}
+
+	var channelID sql.NullInt64
+	if metric.ChannelID != nil {
+		channelID = sql.NullInt64{Int64: *metric.ChannelID, Valid: true}
+	}
+
+	var payload []byte
+	if metric.Metadata != nil {
+		if data, err := json.Marshal(metric.Metadata); err == nil {
+			payload = data
+		}
+	}
+
+	start := time.Now()
+	_, err := p.pool.Exec(ctx, `
+INSERT INTO business_metrics (event, user_id, channel_id, metadata, occurred_at)
+VALUES ($1, $2, $3, $4, $5)
+`, metric.Event, userID, channelID, payload, metric.OccurredAt)
+	metrics.ObserveNetworkRequest("postgres", "business_metrics_insert", "business_metrics", start, err)
+	return err
+}
+
+// RecordBusinessMetric сохраняет бизнесовую метрику в БД.
+func (p *Postgres) RecordBusinessMetric(ctx context.Context, metric domain.BusinessMetric) error {
+	return p.saveBusinessMetric(ctx, metric)
 }
 
 // UpsertByTGID реализует domain.UserRepo.
@@ -137,6 +182,27 @@ RETURNING id, tg_user_id, locale, tz, daily_time, created_at, updated_at, role, 
 		metrics.ObserveNetworkRequest("postgres", "commit", "users", start, err)
 		if err != nil {
 			return domain.User{}, false, err
+		}
+		if created {
+			userID := user.ID
+			meta := map[string]any{
+				"tg_user_id": user.TGUserID,
+				"locale":     user.Locale,
+			}
+			if user.Timezone != "" {
+				meta["timezone"] = user.Timezone
+			}
+			if user.ReferralCode != "" {
+				meta["referral_code"] = user.ReferralCode
+			}
+			if user.ReferredByID != nil {
+				meta["referred_by"] = *user.ReferredByID
+			}
+			_ = p.saveBusinessMetric(ctx, domain.BusinessMetric{
+				Event:    domain.BusinessMetricEventUserRegistered,
+				UserID:   &userID,
+				Metadata: meta,
+			})
 		}
 		return user, created, nil
 	}
@@ -736,12 +802,21 @@ func (p *Postgres) AttachChannelToUser(userID, channelID int64) error {
 	defer cancel()
 
 	start := time.Now()
-	_, err := p.pool.Exec(ctx, `
+	tag, err := p.pool.Exec(ctx, `
 INSERT INTO user_channels (user_id, channel_id)
 VALUES ($1,$2)
 ON CONFLICT (user_id, channel_id) DO NOTHING
 `, userID, channelID)
 	metrics.ObserveNetworkRequest("postgres", "user_channels_attach", "user_channels", start, err)
+	if err == nil && tag.RowsAffected() > 0 {
+		uID := userID
+		chID := channelID
+		_ = p.saveBusinessMetric(ctx, domain.BusinessMetric{
+			Event:     domain.BusinessMetricEventChannelAttached,
+			UserID:    &uID,
+			ChannelID: &chID,
+		})
+	}
 	return err
 }
 
@@ -914,6 +989,22 @@ ON CONFLICT DO NOTHING
 		return domain.Digest{}, err
 	}
 	d.ID = digestID
+	userID := d.UserID
+	meta := map[string]any{
+		"date":        d.Date,
+		"items_count": len(d.Items),
+	}
+	if d.Overview != "" {
+		meta["has_overview"] = true
+	}
+	if len(d.Theses) > 0 {
+		meta["theses_count"] = len(d.Theses)
+	}
+	_ = p.saveBusinessMetric(ctx, domain.BusinessMetric{
+		Event:    domain.BusinessMetricEventDigestBuilt,
+		UserID:   &userID,
+		Metadata: meta,
+	})
 	return d, nil
 }
 

@@ -32,6 +32,7 @@ type Handler struct {
 	billing     domain.Billing
 	sbp         domain.BillingSBP
 	jobs        domain.DigestQueue
+	analytics   domain.BusinessMetricRepo
 	maxDigest   int
 	mu          sync.Mutex
 	pendingDrop map[int64]time.Time
@@ -41,7 +42,7 @@ type Handler struct {
 }
 
 // NewHandler создаёт обработчик.
-func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, billing domain.Billing, sbpService domain.BillingSBP, jobs domain.DigestQueue, maxDigest int) *Handler {
+func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, billing domain.Billing, sbpService domain.BillingSBP, jobs domain.DigestQueue, metricsRepo domain.BusinessMetricRepo, maxDigest int) *Handler {
 	return &Handler{
 		bot:         bot,
 		log:         log,
@@ -51,6 +52,7 @@ func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Se
 		billing:     billing,
 		sbp:         sbpService,
 		jobs:        jobs,
+		analytics:   metricsRepo,
 		maxDigest:   maxDigest,
 		pendingDrop: make(map[int64]time.Time),
 		pendingTime: make(map[int64]struct{}),
@@ -1087,12 +1089,32 @@ func (h *Handler) enqueueDigest(ctx context.Context, chatID, tgUserID, channelID
 		RequestedAt: now,
 		Cause:       domain.DigestCauseManual,
 	}
+	job.ID = uuid.NewString()
 
 	if err := h.jobs.Enqueue(ctx, job); err != nil {
 		h.log.Error().Err(err).Int64("user", tgUserID).Int64("channel", channelID).Msg("не удалось поставить задачу дайджеста")
 		h.reply(chatID, "Не удалось поставить дайджест в очередь, попробуйте позже", nil)
 		return
 	}
+
+	userID := user.ID
+	meta := map[string]any{
+		"job_id":       job.ID,
+		"chat_id":      chatID,
+		"cause":        string(job.Cause),
+		"requested_at": job.RequestedAt,
+	}
+	metric := domain.BusinessMetric{
+		Event:    domain.BusinessMetricEventDigestRequested,
+		UserID:   &userID,
+		Metadata: meta,
+	}
+	if channelID > 0 {
+		chID := channelID
+		meta["channel_id"] = channelID
+		metric.ChannelID = &chID
+	}
+	h.recordBusinessMetric(ctx, metric)
 
 	metrics.IncDigestOverall()
 	metrics.IncDigestForUser(tgUserID)
@@ -1131,14 +1153,39 @@ func (h *Handler) enqueueDigestByTags(ctx context.Context, chatID, tgUserID int6
 		RequestedAt: now,
 		Cause:       domain.DigestCauseManual,
 	}
+	job.ID = uuid.NewString()
 	if err := h.jobs.Enqueue(ctx, job); err != nil {
 		h.log.Error().Err(err).Int64("user", tgUserID).Strs("tags", cleaned).Msg("не удалось поставить задачу дайджеста")
 		h.reply(chatID, "Не удалось поставить дайджест в очередь, попробуйте позже", nil)
 		return
 	}
+
+	userID := user.ID
+	meta := map[string]any{
+		"job_id":       job.ID,
+		"chat_id":      chatID,
+		"cause":        string(job.Cause),
+		"requested_at": job.RequestedAt,
+		"tags":         cleaned,
+	}
+	h.recordBusinessMetric(ctx, domain.BusinessMetric{
+		Event:    domain.BusinessMetricEventDigestRequested,
+		UserID:   &userID,
+		Metadata: meta,
+	})
+
 	metrics.IncDigestOverall()
 	metrics.IncDigestForUser(tgUserID)
 	h.reply(chatID, fmt.Sprintf("Собираем дайджест по тегам: %s", strings.Join(cleaned, ", ")), nil)
+}
+
+func (h *Handler) recordBusinessMetric(ctx context.Context, metric domain.BusinessMetric) {
+	if h.analytics == nil {
+		return
+	}
+	if err := h.analytics.RecordBusinessMetric(ctx, metric); err != nil {
+		h.log.Error().Err(err).Str("event", metric.Event).Msg("bot: не удалось сохранить бизнес-метрику")
+	}
 }
 
 func parseTagsInput(input string) []string {

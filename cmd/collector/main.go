@@ -99,14 +99,15 @@ func main() {
 	digestService := digestusecase.NewService(repoAdapter, repoAdapter, repoAdapter, repoAdapter, summarizerAdapter, rankerAdapter, collector, cfg.Limits.DigestMax)
 
 	worker := &jobWorker{
-		log:      logger,
-		queue:    digestQueue,
-		digests:  repoAdapter,
-		users:    repoAdapter,
-		channels: repoAdapter,
-		statuses: repoAdapter,
-		service:  digestService,
-		bot:      botAPI,
+		log:       logger,
+		queue:     digestQueue,
+		digests:   repoAdapter,
+		users:     repoAdapter,
+		channels:  repoAdapter,
+		statuses:  repoAdapter,
+		analytics: repoAdapter,
+		service:   digestService,
+		bot:       botAPI,
 	}
 
 	logger.Info().Msg("collector: запуск обработки очереди")
@@ -115,14 +116,15 @@ func main() {
 }
 
 type jobWorker struct {
-	log      zerolog.Logger
-	queue    domain.DigestQueue
-	digests  domain.DigestRepo
-	users    domain.UserRepo
-	channels domain.ChannelRepo
-	statuses domain.DigestJobStatusRepo
-	service  *digestusecase.Service
-	bot      *tgbotapi.BotAPI
+	log       zerolog.Logger
+	queue     domain.DigestQueue
+	digests   domain.DigestRepo
+	users     domain.UserRepo
+	channels  domain.ChannelRepo
+	statuses  domain.DigestJobStatusRepo
+	analytics domain.BusinessMetricRepo
+	service   *digestusecase.Service
+	bot       *tgbotapi.BotAPI
 }
 
 const maxDeliveryAttempts = 5
@@ -319,7 +321,41 @@ func (w *jobWorker) handleJob(ctx context.Context, job domain.DigestJob, attempt
 		jobLog.Error().Err(err).Msg("collector: отправка дайджеста")
 		return jobOutcomeRetry
 	}
+	w.observeDigestDelivery(ctx, job, user, digest, attempt)
 	return jobOutcomeCompleted
+}
+
+func (w *jobWorker) observeDigestDelivery(ctx context.Context, job domain.DigestJob, user domain.User, digest domain.Digest, attempt int) {
+	if w.analytics == nil {
+		return
+	}
+	userID := user.ID
+	meta := map[string]any{
+		"job_id":       job.ID,
+		"cause":        string(job.Cause),
+		"attempt":      attempt,
+		"items_count":  len(digest.Items),
+		"requested_at": job.RequestedAt,
+		"date":         job.Date,
+		"delivered_at": time.Now().UTC(),
+		"chat_id":      job.ChatID,
+	}
+	metric := domain.BusinessMetric{
+		Event:    domain.BusinessMetricEventDigestDelivered,
+		UserID:   &userID,
+		Metadata: meta,
+	}
+	if job.ChannelID > 0 {
+		channelID := job.ChannelID
+		meta["channel_id"] = job.ChannelID
+		metric.ChannelID = &channelID
+	}
+	if len(job.Tags) > 0 {
+		meta["tags"] = job.Tags
+	}
+	if err := w.analytics.RecordBusinessMetric(ctx, metric); err != nil {
+		w.log.Error().Err(err).Str("event", domain.BusinessMetricEventDigestDelivered).Msg("collector: не удалось сохранить бизнес-метрику")
+	}
 }
 
 func (w *jobWorker) persistDigest(d domain.Digest) error {
