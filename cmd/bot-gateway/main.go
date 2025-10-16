@@ -44,7 +44,14 @@ func main() {
 	repoAdapter := repo.NewPostgres(pool)
 	var billingAdapter domain.Billing
 	if cfg.Billing.BaseURL != "" {
-		client, err := billingclient.New(cfg.Billing.BaseURL, billingclient.WithTimeout(cfg.Billing.Timeout))
+		if cfg.Billing.APIToken == "" {
+			logger.Fatal().Msg("бот: не настроен BILLING_API_TOKEN при включенном биллинге")
+		}
+		client, err := billingclient.New(
+			cfg.Billing.BaseURL,
+			billingclient.WithTimeout(cfg.Billing.Timeout),
+			billingclient.WithAPIToken(cfg.Billing.APIToken),
+		)
 		if err != nil {
 			logger.Fatal().Err(err).Msg("бот: некорректная конфигурация биллинга")
 		}

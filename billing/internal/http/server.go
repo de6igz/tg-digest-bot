@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"crypto/rsa"
+	"crypto/subtle"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -23,6 +25,7 @@ type Server struct {
 	sbpService       *sbpusecase.Service
 	sbpWebhookSecret string
 	sbpWebhookKey    *rsa.PublicKey
+	authToken        string
 }
 
 type Option func(*Server)
@@ -38,6 +41,12 @@ func WithSBPService(service *sbpusecase.Service, webhookSecret string, webhookKe
 		s.sbpService = service
 		s.sbpWebhookSecret = webhookSecret
 		s.sbpWebhookKey = webhookKey
+	}
+}
+
+func WithAuthToken(token string) Option {
+	return func(s *Server) {
+		s.authToken = token
 	}
 }
 
@@ -129,6 +138,12 @@ func (s *Server) Router() http.Handler {
 	}
 	e.Use(middleware.Recover())
 
+	if s.authToken != "" {
+		e.Use(s.authMiddleware)
+	}
+
+	e.GET("/swagger/openapi.yaml", s.handleSwagger)
+
 	// Billing
 	e.POST("/api/v1/accounts/ensure", s.handleEnsureAccount)
 	e.GET("/api/v1/accounts/by-user/:userID", s.handleGetAccountByUserID)
@@ -147,6 +162,44 @@ func (s *Server) Router() http.Handler {
 	}
 
 	return e
+}
+
+func (s *Server) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		req := c.Request()
+		if req != nil && req.URL.Path == "/api/v1/sbp/webhook" {
+			return next(c)
+		}
+
+		token := extractToken(req)
+		if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.authToken)) != 1 {
+			return writeError(c, http.StatusUnauthorized, "unauthorized", "invalid or missing token")
+		}
+
+		return next(c)
+	}
+}
+
+func extractToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader != "" {
+		const bearerPrefix = "Bearer "
+		if strings.HasPrefix(authHeader, bearerPrefix) {
+			return strings.TrimSpace(strings.TrimPrefix(authHeader, bearerPrefix))
+		}
+		return strings.TrimSpace(authHeader)
+	}
+
+	token := r.Header.Get("X-API-Token")
+	if token != "" {
+		return strings.TrimSpace(token)
+	}
+
+	return ""
 }
 
 // === Handlers

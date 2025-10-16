@@ -8,6 +8,10 @@ type User struct {
 	TGUserID            int64
 	Locale              string
 	Timezone            string
+	FirstName           string
+	LastName            string
+	Username            string
+	IsBot               bool
 	DailyTime           time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
@@ -18,6 +22,17 @@ type User struct {
 	ReferralCode        string
 	ReferralsCount      int
 	ReferredByID        *int64
+}
+
+// TelegramProfile содержит данные пользователя Telegram, полученные от Bot API.
+type TelegramProfile struct {
+	TGUserID  int64
+	Locale    string
+	Timezone  string
+	FirstName string
+	LastName  string
+	Username  string
+	IsBot     bool
 }
 
 // ReferralResult описывает применение реферального кода.

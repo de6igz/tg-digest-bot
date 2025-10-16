@@ -1,0 +1,8 @@
+ALTER TABLE users
+    ADD COLUMN first_name TEXT,
+    ADD COLUMN last_name TEXT,
+    ADD COLUMN username TEXT,
+    ADD COLUMN is_bot BOOLEAN DEFAULT FALSE NOT NULL;
+
+ALTER TABLE users
+    ALTER COLUMN tz DROP DEFAULT;

@@ -1,0 +1,516 @@
+openapi: 3.0.0
+info:
+  title: Billing Service API
+  version: 0.1.0
+  description: |
+    HTTP API для внутреннего биллинга. Все методы (кроме вебхука)
+    требуют передачи API токена в заголовке `Authorization: Bearer` или `X-API-Token`.
+servers:
+  - url: https://billing.example.com
+paths:
+  /api/v1/accounts/ensure:
+    post:
+      summary: Создать или получить аккаунт пользователя
+      security:
+        - BearerAuth: []
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnsureAccountRequest'
+      responses:
+        '200':
+          description: Успешный ответ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingAccount'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/accounts/by-user/{user_id}:
+    get:
+      summary: Получить аккаунт по идентификатору пользователя
+      security:
+        - BearerAuth: []
+        - ApiToken: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Найденный аккаунт
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingAccount'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/accounts/charge:
+    post:
+      summary: Списать средства с аккаунта
+      security:
+        - BearerAuth: []
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChargeAccountRequest'
+      responses:
+        '200':
+          description: Созданный платеж
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Недостаточно средств
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/invoices:
+    post:
+      summary: Создать счет
+      security:
+        - BearerAuth: []
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvoiceRequest'
+      responses:
+        '200':
+          description: Созданный счет
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/invoices/{id}:
+    get:
+      summary: Получить счет по идентификатору
+      security:
+        - BearerAuth: []
+        - ApiToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Найденный счет
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/invoices/idempotency/{key}:
+    get:
+      summary: Получить счет по идемпотентному ключу
+      security:
+        - BearerAuth: []
+        - ApiToken: []
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Найденный счет
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invoice'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/payments/incoming:
+    post:
+      summary: Зарегистрировать входящий платеж
+      security:
+        - BearerAuth: []
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterIncomingPaymentRequest'
+      responses:
+        '200':
+          description: Созданный платеж
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/sbp/invoices:
+    post:
+      summary: Создать SBP счет и QR-код
+      security:
+        - BearerAuth: []
+        - ApiToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSBPInvoiceRequest'
+      responses:
+        '200':
+          description: Созданный счет и QR-код
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateSBPInvoiceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: SBP сервис недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /api/v1/sbp/webhook:
+    post:
+      summary: Вебхук уведомлений SBP
+      description: Защищается отдельным токеном Tochka. Авторизация через API-токен не требуется.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Уведомление обработано
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  payment_id:
+                    type: integer
+                    format: int64
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    ApiToken:
+      type: apiKey
+      in: header
+      name: X-API-Token
+  schemas:
+    Money:
+      type: object
+      properties:
+        amount:
+          type: integer
+          format: int64
+        currency:
+          type: string
+      required: [amount, currency]
+    BillingAccount:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        user_id:
+          type: integer
+          format: int64
+        balance:
+          $ref: '#/components/schemas/Money'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, user_id, balance, created_at, updated_at]
+    Invoice:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        account_id:
+          type: integer
+          format: int64
+        amount:
+          $ref: '#/components/schemas/Money'
+        description:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+        idempotency_key:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+        qr_id:
+          type: string
+      required: [id, account_id, amount, status, idempotency_key, created_at, updated_at]
+    Payment:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        account_id:
+          type: integer
+          format: int64
+        invoice_id:
+          type: integer
+          format: int64
+          nullable: true
+        amount:
+          $ref: '#/components/schemas/Money'
+        metadata:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+        idempotency_key:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, account_id, amount, status, idempotency_key, created_at, updated_at]
+    SBPQRCode:
+      type: object
+      properties:
+        qr_id:
+          type: string
+        payment_link:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        raw:
+          type: object
+          additionalProperties: true
+      required: [qr_id]
+    EnsureAccountRequest:
+      type: object
+      properties:
+        user_id:
+          type: integer
+          format: int64
+      required: [user_id]
+    ChargeAccountRequest:
+      type: object
+      properties:
+        account_id:
+          type: integer
+          format: int64
+        amount:
+          $ref: '#/components/schemas/Money'
+        description:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        idempotency_key:
+          type: string
+      required: [account_id, amount, idempotency_key]
+    CreateInvoiceRequest:
+      type: object
+      properties:
+        account_id:
+          type: integer
+          format: int64
+        amount:
+          $ref: '#/components/schemas/Money'
+        description:
+          type: string
+        metadata:
+          type: object
+          additionalProperties: true
+        idempotency_key:
+          type: string
+        qr_id:
+          type: string
+          nullable: true
+      required: [account_id, amount, idempotency_key]
+    RegisterIncomingPaymentRequest:
+      type: object
+      properties:
+        account_id:
+          type: integer
+          format: int64
+        invoice_id:
+          type: integer
+          format: int64
+          nullable: true
+        amount:
+          $ref: '#/components/schemas/Money'
+        metadata:
+          type: object
+          additionalProperties: true
+        idempotency_key:
+          type: string
+      required: [account_id, amount, idempotency_key]
+    CreateSBPInvoiceRequest:
+      type: object
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        amount:
+          type: integer
+          format: int64
+        currency:
+          type: string
+        description:
+          type: string
+        paymentPurpose:
+          type: string
+        idempotency_key:
+          type: string
+        qrcType:
+          type: string
+        redirectUrl:
+          type: string
+          format: uri
+        metadata:
+          type: object
+          additionalProperties: true
+        extra:
+          type: object
+          additionalProperties: true
+      required: [user_id, amount, currency, idempotency_key]
+    CreateSBPInvoiceResponse:
+      type: object
+      properties:
+        invoice:
+          $ref: '#/components/schemas/Invoice'
+        qr:
+          $ref: '#/components/schemas/SBPQRCode'
+      required: [invoice, qr]
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+      required: [error, code]
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Токен не передан или неверный
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Внутренняя ошибка сервиса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

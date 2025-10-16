@@ -18,6 +18,7 @@ import (
 type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
+	apiToken   string
 }
 
 type Option func(*Client)
@@ -36,6 +37,12 @@ func WithTimeout(timeout time.Duration) Option {
 			c.httpClient = &http.Client{}
 		}
 		c.httpClient.Timeout = timeout
+	}
+}
+
+func WithAPIToken(token string) Option {
+	return func(c *Client) {
+		c.apiToken = strings.TrimSpace(token)
 	}
 }
 
@@ -192,6 +199,9 @@ func (c *Client) newRequest(ctx context.Context, method, endpoint string, body a
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.apiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiToken)
 	}
 	return req, nil
 }
