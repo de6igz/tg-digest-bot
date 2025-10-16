@@ -385,12 +385,14 @@ func (p *Postgres) ChargeAccount(ctx context.Context, params domain.ChargeAccoun
 		}
 	}
 
+	debitAmount := -params.Amount.Amount
+
 	row := tx.QueryRow(ctx, `
 INSERT INTO billing_payments (account_id, amount, currency, metadata, idempotency_key, description, status)
-VALUES ($1, -$2, $3, $4, $5, NULLIF($6,''), 'completed')
+VALUES ($1, $2, $3, $4, $5, NULLIF($6,''), 'completed')
 ON CONFLICT (idempotency_key) DO NOTHING
 RETURNING id, account_id, invoice_id, amount, currency, metadata, status, idempotency_key, created_at, updated_at, completed_at
-`, params.AccountID, params.Amount.Amount, params.Amount.Currency, meta, params.IdempotencyKey, params.Description)
+`, params.AccountID, debitAmount, params.Amount.Currency, meta, params.IdempotencyKey, params.Description)
 	payment, scanErr := scanPayment(row)
 	if scanErr != nil {
 		if !errors.Is(scanErr, pgx.ErrNoRows) {
@@ -400,7 +402,7 @@ RETURNING id, account_id, invoice_id, amount, currency, metadata, status, idempo
 		if err != nil {
 			return domain.Payment{}, err
 		}
-		if payment.AccountID != params.AccountID || payment.Amount.Amount != -params.Amount.Amount || payment.Amount.Currency != params.Amount.Currency {
+		if payment.AccountID != params.AccountID || payment.Amount.Amount != debitAmount || payment.Amount.Currency != params.Amount.Currency {
 			return domain.Payment{}, fmt.Errorf("payment idempotency conflict")
 		}
 		if err := tx.Commit(ctx); err != nil {
