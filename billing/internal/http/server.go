@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"billing/internal/domain"
+	"billing/internal/metrics"
 	"billing/internal/tochka"
 	sbpusecase "billing/internal/usecase/sbp"
 )
@@ -124,7 +125,7 @@ func NewServer(b domain.Billing, opts ...Option) *Server {
 }
 
 func (s *Server) Router() http.Handler {
-	e := s.newEcho()
+	e := s.newEcho("api")
 
 	if s.authToken != "" {
 		e.Use(s.authMiddleware)
@@ -152,7 +153,7 @@ func (s *Server) Router() http.Handler {
 }
 
 func (s *Server) WebhookRouter() http.Handler {
-	e := s.newEcho()
+	e := s.newEcho("webhook")
 
 	//if s.sbpService == nil {
 	//	e.Any("/*", func(c echo.Context) error {
@@ -170,7 +171,7 @@ func (s *Server) HasSBPWebhook() bool {
 	return s.sbpService != nil
 }
 
-func (s *Server) newEcho() *echo.Echo {
+func (s *Server) newEcho(component string) *echo.Echo {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
@@ -184,6 +185,7 @@ func (s *Server) newEcho() *echo.Echo {
 		s.log.Error().Err(err).Msg("http server error")
 	}
 	e.Use(middleware.Recover())
+	e.Use(metrics.EchoMiddleware(component))
 
 	return e
 }

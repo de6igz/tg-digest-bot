@@ -22,6 +22,7 @@ type Context interface {
 	JSON(int, any) error
 	Blob(int, string, []byte) error
 	Echo() *Echo
+	Path() string
 }
 
 type Response struct {
@@ -216,4 +217,11 @@ func (c *context) Blob(code int, contentType string, b []byte) error {
 
 func (c *context) Echo() *Echo {
 	return c.e
+}
+
+func (c *context) Path() string {
+	if c.request == nil {
+		return ""
+	}
+	return c.request.URL.Path
 }
