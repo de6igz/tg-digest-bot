@@ -10,23 +10,23 @@ volumes:
 
 services:
   # === Databases & MQ ===
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: tgdigest
-    ports:
-      - "5432:5432"
-    volumes:
-      - db_data:/var/lib/postgresql/data
-    networks: [app-net]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d tgdigest"]
-      interval: 5s
-      timeout: 3s
-      retries: 15
-    restart: unless-stopped
+#  db:
+#    image: postgres:16
+#    environment:
+#      POSTGRES_USER: postgres
+#      POSTGRES_PASSWORD: postgres
+#      POSTGRES_DB: tgdigest
+#    ports:
+#      - "5432:5432"
+#    volumes:
+#      - db_data:/var/lib/postgresql/data
+#    networks: [app-net]
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U postgres -d tgdigest"]
+#      interval: 5s
+#      timeout: 3s
+#      retries: 15
+#    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3-management
@@ -41,37 +41,37 @@ services:
       retries: 15
     restart: unless-stopped
 
-  billing-db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: billing
-    ports:
-      - "5433:5432"
-    volumes:
-      - billing_db_data:/var/lib/postgresql/data
-    networks: [app-net]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d billing"]
-      interval: 5s
-      timeout: 3s
-      retries: 15
-    restart: unless-stopped
+#  billing-db:
+#    image: postgres:16
+#    environment:
+#      POSTGRES_USER: postgres
+#      POSTGRES_PASSWORD: postgres
+#      POSTGRES_DB: billing
+#    ports:
+#      - "5433:5432"
+#    volumes:
+#      - billing_db_data:/var/lib/postgresql/data
+#    networks: [app-net]
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U postgres -d billing"]
+#      interval: 5s
+#      timeout: 3s
+#      retries: 15
+#    restart: unless-stopped
 
   # === Migrations (app DB) ===
-  migrator:
-    image: migrate/migrate:v4.17.0
-    volumes:
-      - ../migrations:/migrations
-    command: ["-path", "/migrations", "-database", "${PG_DSN}", "up"]
-    environment:
-      PG_DSN: ${PG_DSN}
-    depends_on:
-      db:
-        condition: service_healthy
-    networks: [app-net]
-    restart: "no"
+#  migrator:
+#    image: migrate/migrate:v4.17.0
+#    volumes:
+#      - ../migrations:/migrations
+#    command: ["-path", "/migrations", "-database", "${PG_DSN}", "up"]
+#    environment:
+#      PG_DSN: ${PG_DSN}
+#    depends_on:
+#      db:
+#        condition: service_healthy
+#    networks: [app-net]
+#    restart: "no"
 
   # === Observability ===
   prometheus:
