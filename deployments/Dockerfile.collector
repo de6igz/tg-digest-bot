@@ -1,10 +1,12 @@
 FROM golang:1.24 AS builder
 WORKDIR /app
+ENV CGO_ENABLED=0 GOOS=linux GOFLAGS=-p=1
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /$svc ./cmd/$svc/main.go
+# ...
+RUN go build -trimpath -ldflags="-s -w" -o /collector ./cmd/collector/main.go
 
 FROM gcr.io/distroless/base-debian12
-COPY --from=builder /$svc /$svc
-ENTRYPOINT ["/$svc"]
+COPY --from=builder /collector /collector
+ENTRYPOINT ["/collector"]
