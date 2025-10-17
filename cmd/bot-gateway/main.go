@@ -103,7 +103,7 @@ func main() {
 		logger.Fatal().Err(err).Msg("не удалось создать бота")
 	}
 
-	h := bot.NewHandler(botAPI, logger, channelService, scheduleService, repoAdapter, billingAdapter, sbpClient, digestQueue, repoAdapter, cfg.Limits.DigestMax)
+	h := bot.NewHandler(botAPI, logger, channelService, scheduleService, repoAdapter, billingAdapter, sbpClient, digestQueue, repoAdapter, repoAdapter, cfg.Limits.DigestMax)
 
 	r := chi.NewRouter()
 	r.Post("/bot/webhook", func(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ChannelMeta содержит метаданные канала из MTProto.
 type ChannelMeta struct {
@@ -82,4 +85,9 @@ type Cache interface {
 	Once(key string, ttl time.Duration, fn func() error) error
 	Set(key string, value []byte, ttl time.Duration) error
 	Get(key string) ([]byte, error)
+}
+
+// FeedbackRepo сохраняет отзывы пользователей.
+type FeedbackRepo interface {
+	SaveFeedback(ctx context.Context, feedback Feedback) error
 }
