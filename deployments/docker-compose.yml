@@ -1,5 +1,3 @@
-version: "3.9"
-
 networks:
   app-net:
     driver: bridge
@@ -114,7 +112,8 @@ services:
       context: ..
       dockerfile: deployments/Dockerfile.bot
       args:
-        svc: bot
+        svc: bot-gateway
+        bin: bot
     env_file: ../.env.example
     expose:
       - "9090"   # metrics only (внутри сети)
