@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	footerLinkURL  = "https://logosdigest.example"
-	footerLinkName = "LogosDigest"
+	footerLinkURL  = "https://t.me/news_collector_dev_bot"
+	footerLinkName = "Short Summary"
 )
 
 // FormatDigest формирует текстовое представление дайджеста для отправки пользователю.
