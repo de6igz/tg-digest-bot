@@ -170,7 +170,9 @@ services:
     # Ничего наружу не публикуем
     expose:
       - "8082"   # API биллинга только внутри docker
-      - "18082"  # metrics биллинга только внутри docker
+      - "9090"  # metrics биллинга только внутри docker
+    ports:
+      - "18082:18082"
     depends_on:
       billing-db:
         condition: service_healthy
