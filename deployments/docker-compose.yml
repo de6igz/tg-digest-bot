@@ -1,20 +1,48 @@
-version: '3.9'
+version: "3.9"
+
+networks:
+  app-net:
+    driver: bridge
+
+volumes:
+  db_data:
+  billing_db_data:
+  prometheus-data:
+  grafana-data:
+
 services:
-#  db:
-#    image: postgres:16
-#    environment:
-#      POSTGRES_USER: postgres
-#      POSTGRES_PASSWORD: postgres
-#      POSTGRES_DB: tgdigest
-#    ports:
-#      - "5432:5432"
-#    volumes:
-#      - db_data:/var/lib/postgresql/data
+  # === Databases & MQ ===
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tgdigest
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks: [app-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tgdigest"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
   rabbitmq:
     image: rabbitmq:3-management
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Web UI
+    networks: [app-net]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
   billing-db:
     image: postgres:16
     environment:
@@ -25,59 +53,126 @@ services:
       - "5433:5432"
     volumes:
       - billing_db_data:/var/lib/postgresql/data
+    networks: [app-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d billing"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  # === Migrations (app DB) ===
+  migrator:
+    image: migrate/migrate:v4.17.0
+    volumes:
+      - ../migrations:/migrations
+    command: ["-path", "/migrations", "-database", "${PG_DSN}", "up"]
+    environment:
+      PG_DSN: ${PG_DSN}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [app-net]
+    restart: "no"
+
+  # === Observability ===
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090" # Prometheus UI наружу
+    volumes:
+      - prometheus-data:/prometheus
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks: [app-net]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: dark
+    ports:
+      - "3000:3000" # Grafana UI наружу
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    networks: [app-net]
+    restart: unless-stopped
+
+  # === App services ===
+  bot:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.bot
+    env_file: ../.env.example
+    expose:
+      - "9090"   # metrics only (внутри сети)
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks: [app-net]
+    restart: unless-stopped
+
+  collector:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.collector
+    env_file: ../.env.example
+    expose:
+      - "9090"   # metrics only (внутри сети)
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks: [app-net]
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.scheduler
+    env_file: ../.env.example
+    expose:
+      - "9090"   # metrics only (внутри сети)
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks: [app-net]
+    restart: unless-stopped
+
+  # === Billing (полностью внутренний) ===
   billing:
     build:
       context: ..
       dockerfile: deployments/Dockerfile.billing
     env_file:
       - ../billing/.env.example
+    # Ничего наружу не публикуем
+    expose:
+      - "8082"   # API биллинга только внутри docker
+      - "18082"  # metrics биллинга только внутри docker
     depends_on:
-      - billing-db
-    ports:
-      - "8082:8082"
-      - "18082:18082"
-#  migrator:
-#    image: migrate/migrate:v4.17.0
-#    volumes:
-#      - ../migrations:/migrations
-#    command: ["-path", "/migrations", "-database", "${PG_DSN}", "up"]
-#    depends_on:
-#      - db
-#    environment:
-#      PG_DSN: ${PG_DSN}
-#  bot:
-#    build:
-#      context: ..
-#      dockerfile: deployments/Dockerfile.bot
-#    env_file: ../.env.example
-#    depends_on:
-#      - db
-#      - rabbitmq
-#  collector:
-#    build:
-#      context: ..
-#      dockerfile: deployments/Dockerfile.collector
-#    env_file: ../.env.example
-#    depends_on:
-#      - db
-#      - rabbitmq
-#  scheduler:
-#    build:
-#      context: ..
-#      dockerfile: deployments/Dockerfile.scheduler
-#    env_file: ../.env.example
-#    depends_on:
-#      - db
-#      - rabbitmq
-#  api:
-#    build:
-#      context: ..
-#      dockerfile: deployments/Dockerfile.api
-#    env_file: ../.env.example
-#    ports:
-#      - "8080:8080"
-#    depends_on:
-#      - db
-volumes:
-  db_data:
-  billing_db_data:
+      billing-db:
+        condition: service_healthy
+    networks: [app-net]
+    restart: unless-stopped
