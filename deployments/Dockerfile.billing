@@ -1,0 +1,13 @@
+FROM golang:1.24 AS builder
+WORKDIR /app/billing
+
+COPY billing/go.mod billing/go.sum ./
+COPY third_party /app/third_party
+RUN go mod download
+
+COPY billing/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o /billing ./cmd/billing
+
+FROM gcr.io/distroless/base-debian12
+COPY --from=builder /billing /billing
+ENTRYPOINT ["/billing"]
