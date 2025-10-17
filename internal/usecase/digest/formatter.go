@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	footerLinkURL  = "https://t.me/news_collector_dev_bot"
-	footerLinkName = "Short Summary"
+	footerLinkURL  = "https://t.me/coffee_break_news_bot"
+	footerLinkName = "Coffee Break News"
 )
 
 // FormatDigest формирует текстовое представление дайджеста для отправки пользователю.
