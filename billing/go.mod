@@ -3,10 +3,12 @@ module billing
 go 1.24.7
 
 require (
-	github.com/jackc/pgx/v5 v5.7.6
-	github.com/kelseyhightower/envconfig v1.4.0
-	github.com/labstack/echo/v4 v4.12.0
-	github.com/rs/zerolog v1.34.0
+        github.com/jackc/pgx/v5 v5.7.6
+        github.com/kelseyhightower/envconfig v1.4.0
+        github.com/labstack/echo/v4 v4.12.0
+        github.com/prometheus/client_golang v1.23.2
+        github.com/prometheus/client_golang/prometheus/promhttp v1.0.0
+        github.com/rs/zerolog v1.34.0
 )
 
 require (
@@ -26,3 +28,5 @@ require (
 )
 
 replace github.com/labstack/echo/v4 => ../third_party/github.com/labstack/echo/v4
+replace github.com/prometheus/client_golang => ../third_party/github.com/prometheus/client_golang
+replace github.com/prometheus/client_golang/prometheus/promhttp => ../third_party/github.com/prometheus/client_golang/prometheus/promhttp

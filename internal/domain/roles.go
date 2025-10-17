@@ -27,7 +27,7 @@ var plans = map[UserRole]UserPlan{
 		Name:             "Free",
 		ChannelLimit:     3,
 		ManualDailyLimit: 1,
-		ManualIntroTotal: 5,
+		ManualIntroTotal: 10,
 	},
 	UserRolePlus: {
 		Role:             UserRolePlus,

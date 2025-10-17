@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
 	"billing/internal/config"
 	httpapi "billing/internal/http"
+	"billing/internal/metrics"
 	"billing/internal/storage"
 	"billing/internal/tochka"
 	sbpusecase "billing/internal/usecase/sbp"
@@ -34,6 +36,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	metrics.MustRegister(prometheus.DefaultRegisterer)
+	if cfg.Metrics.Enabled {
+		metrics.StartServer(ctx, log.With().Str("component", "metrics").Logger(), cfg.Metrics.Addr)
+	}
 
 	pool, err := connectDB(ctx, cfg.PGDSN)
 	if err != nil {
