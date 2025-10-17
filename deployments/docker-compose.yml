@@ -113,6 +113,8 @@ services:
     build:
       context: ..
       dockerfile: deployments/Dockerfile.bot
+      args:
+        svc: bot
     env_file: ../.env.example
     expose:
       - "9090"   # metrics only (внутри сети)
@@ -130,6 +132,8 @@ services:
     build:
       context: ..
       dockerfile: deployments/Dockerfile.collector
+      args:
+        svc: collector
     env_file: ../.env.example
     expose:
       - "9090"   # metrics only (внутри сети)
@@ -147,6 +151,8 @@ services:
     build:
       context: ..
       dockerfile: deployments/Dockerfile.scheduler
+      args:
+        svc: scheduler
     env_file: ../.env.example
     expose:
       - "9090"   # metrics only (внутри сети)
