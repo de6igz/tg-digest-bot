@@ -25,6 +25,7 @@ type Postgres struct {
 }
 
 var _ domain.BusinessMetricRepo = (*Postgres)(nil)
+var _ domain.FeedbackRepo = (*Postgres)(nil)
 
 const (
 	referralAlphabet   = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -106,6 +107,27 @@ VALUES ($1, $2, $3, $4, $5)
 // RecordBusinessMetric сохраняет бизнесовую метрику в БД.
 func (p *Postgres) RecordBusinessMetric(ctx context.Context, metric domain.BusinessMetric) error {
 	return p.saveBusinessMetric(ctx, metric)
+}
+
+// SaveFeedback сохраняет отзыв пользователя.
+func (p *Postgres) SaveFeedback(ctx context.Context, feedback domain.Feedback) error {
+	message := strings.TrimSpace(feedback.Message)
+	if message == "" {
+		return errors.New("feedback message is empty")
+	}
+	if feedback.CreatedAt.IsZero() {
+		feedback.CreatedAt = time.Now().UTC()
+	}
+	ctx, cancel := p.connCtxWithParent(ctx)
+	defer cancel()
+
+	start := time.Now()
+	_, err := p.pool.Exec(ctx, `
+INSERT INTO feedback (user_id, chat_id, message, created_at)
+VALUES ($1, $2, $3, $4)
+`, feedback.UserID, feedback.ChatID, message, feedback.CreatedAt)
+	metrics.ObserveNetworkRequest("postgres", "feedback_insert", "feedback", start, err)
+	return err
 }
 
 // UpsertByTGID реализует domain.UserRepo.

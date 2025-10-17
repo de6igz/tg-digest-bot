@@ -24,40 +24,44 @@ import (
 
 // Handler обслуживает вебхук бота.
 type Handler struct {
-	bot         *tgbotapi.BotAPI
-	log         zerolog.Logger
-	channelUC   *channels.Service
-	scheduleUC  *schedule.Service
-	users       domain.UserRepo
-	billing     domain.Billing
-	sbp         domain.BillingSBP
-	jobs        domain.DigestQueue
-	analytics   domain.BusinessMetricRepo
-	maxDigest   int
-	mu          sync.Mutex
-	pendingDrop map[int64]time.Time
-	pendingTime map[int64]struct{}
-	pendingTZ   map[int64]struct{}
-	offers      map[string]subscriptionOffer
+	bot             *tgbotapi.BotAPI
+	log             zerolog.Logger
+	channelUC       *channels.Service
+	scheduleUC      *schedule.Service
+	users           domain.UserRepo
+	billing         domain.Billing
+	sbp             domain.BillingSBP
+	jobs            domain.DigestQueue
+	analytics       domain.BusinessMetricRepo
+	feedback        domain.FeedbackRepo
+	maxDigest       int
+	mu              sync.Mutex
+	pendingDrop     map[int64]time.Time
+	pendingTime     map[int64]struct{}
+	pendingTZ       map[int64]struct{}
+	pendingFeedback map[int64]struct{}
+	offers          map[string]subscriptionOffer
 }
 
 // NewHandler создаёт обработчик.
-func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, billing domain.Billing, sbpService domain.BillingSBP, jobs domain.DigestQueue, metricsRepo domain.BusinessMetricRepo, maxDigest int) *Handler {
+func NewHandler(bot *tgbotapi.BotAPI, log zerolog.Logger, channelUC *channels.Service, scheduleUC *schedule.Service, userRepo domain.UserRepo, billing domain.Billing, sbpService domain.BillingSBP, jobs domain.DigestQueue, metricsRepo domain.BusinessMetricRepo, feedbackRepo domain.FeedbackRepo, maxDigest int) *Handler {
 	return &Handler{
-		bot:         bot,
-		log:         log,
-		channelUC:   channelUC,
-		scheduleUC:  scheduleUC,
-		users:       userRepo,
-		billing:     billing,
-		sbp:         sbpService,
-		jobs:        jobs,
-		analytics:   metricsRepo,
-		maxDigest:   maxDigest,
-		pendingDrop: make(map[int64]time.Time),
-		pendingTime: make(map[int64]struct{}),
-		pendingTZ:   make(map[int64]struct{}),
-		offers:      defaultSubscriptionOffers(),
+		bot:             bot,
+		log:             log,
+		channelUC:       channelUC,
+		scheduleUC:      scheduleUC,
+		users:           userRepo,
+		billing:         billing,
+		sbp:             sbpService,
+		jobs:            jobs,
+		analytics:       metricsRepo,
+		feedback:        feedbackRepo,
+		maxDigest:       maxDigest,
+		pendingDrop:     make(map[int64]time.Time),
+		pendingTime:     make(map[int64]struct{}),
+		pendingTZ:       make(map[int64]struct{}),
+		pendingFeedback: make(map[int64]struct{}),
+		offers:          defaultSubscriptionOffers(),
 	}
 }
 
@@ -73,6 +77,9 @@ func (h *Handler) HandleUpdate(ctx context.Context, upd tgbotapi.Update) {
 func (h *Handler) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	text := strings.TrimSpace(msg.Text)
 	if msg.From != nil && !strings.HasPrefix(text, "/") {
+		if h.tryHandleFeedbackInput(ctx, msg.Chat.ID, msg.From.ID, text) {
+			return
+		}
 		if h.tryHandleTimezoneInput(ctx, msg.Chat.ID, msg.From.ID, text) {
 			return
 		}
@@ -144,6 +151,13 @@ func (h *Handler) handleMessage(ctx context.Context, msg *tgbotapi.Message) {
 	case strings.HasPrefix(text, "/unmute"):
 		alias := strings.TrimSpace(strings.TrimPrefix(text, "/unmute"))
 		h.handleMuteCommand(ctx, msg.Chat.ID, msg.From.ID, alias, false)
+	case strings.HasPrefix(text, "/feedback"):
+		if msg.From == nil {
+			h.reply(msg.Chat.ID, "Не удалось определить пользователя", nil)
+			return
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(text, "/feedback"))
+		h.handleFeedback(ctx, msg.Chat.ID, msg.From.ID, payload)
 	case strings.HasPrefix(text, "/clear_data"):
 		h.handleClearRequest(msg.Chat.ID, msg.From.ID)
 	case strings.HasPrefix(text, "/clear_data_confirm"):
@@ -228,6 +242,70 @@ func (h *Handler) handleStart(ctx context.Context, msg *tgbotapi.Message) {
 
 func (h *Handler) handleHelp(chatID int64) {
 	h.reply(chatID, h.buildHelpMessage(), h.mainKeyboard())
+}
+
+func (h *Handler) handleFeedback(ctx context.Context, chatID, tgUserID int64, payload string) {
+	if tgUserID == 0 {
+		h.reply(chatID, "Не удалось определить пользователя", nil)
+		return
+	}
+	message := strings.TrimSpace(payload)
+	if message == "" {
+		h.mu.Lock()
+		h.pendingFeedback[chatID] = struct{}{}
+		h.mu.Unlock()
+		h.reply(chatID, "Напишите ваш отзыв одним сообщением, и я обязательно передам его команде.", nil)
+		return
+	}
+	h.submitFeedback(ctx, chatID, tgUserID, message)
+}
+
+func (h *Handler) tryHandleFeedbackInput(ctx context.Context, chatID, tgUserID int64, text string) bool {
+	h.mu.Lock()
+	_, pending := h.pendingFeedback[chatID]
+	if pending {
+		delete(h.pendingFeedback, chatID)
+	}
+	h.mu.Unlock()
+	if !pending {
+		return false
+	}
+	h.submitFeedback(ctx, chatID, tgUserID, text)
+	return true
+}
+
+func (h *Handler) submitFeedback(ctx context.Context, chatID, tgUserID int64, text string) {
+	message := strings.TrimSpace(text)
+	if message == "" {
+		h.mu.Lock()
+		h.pendingFeedback[chatID] = struct{}{}
+		h.mu.Unlock()
+		h.reply(chatID, "Отзыв не может быть пустым. Попробуйте ещё раз.", nil)
+		return
+	}
+	if h.feedback == nil {
+		h.log.Warn().Int64("chat", chatID).Msg("bot: feedback repo is not configured")
+		h.reply(chatID, "Сбор отзывов временно недоступен. Попробуйте позже.", nil)
+		return
+	}
+	user, err := h.users.GetByTGID(tgUserID)
+	if err != nil {
+		h.log.Error().Err(err).Int64("tg_user", tgUserID).Msg("bot: get user for feedback failed")
+		h.reply(chatID, "Не удалось сохранить отзыв. Попробуйте отправить /start и повторить.", nil)
+		return
+	}
+	feedback := domain.Feedback{
+		UserID:    user.ID,
+		ChatID:    chatID,
+		Message:   message,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := h.feedback.SaveFeedback(ctx, feedback); err != nil {
+		h.log.Error().Err(err).Int64("user", user.ID).Msg("bot: save feedback failed")
+		h.reply(chatID, "Не удалось сохранить отзыв. Попробуйте позже.", nil)
+		return
+	}
+	h.reply(chatID, "Спасибо за отзыв!", nil)
 }
 
 func (h *Handler) handleBalance(ctx context.Context, chatID, tgUserID int64) {
