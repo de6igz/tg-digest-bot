@@ -839,6 +839,8 @@ func (h *Handler) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQuery
 	case strings.HasPrefix(data, "plan_buy:"):
 		planKey := strings.TrimPrefix(data, "plan_buy:")
 		h.handleBuySubscription(ctx, cb.Message.Chat.ID, cb.From.ID, planKey)
+	case data == "feedback":
+		h.handleFeedback(ctx, cb.Message.Chat.ID, cb.From.ID, "")
 	case data == "digest_now":
 		h.handleDigestNow(ctx, cb.Message.Chat.ID, cb.From.ID)
 	case data == "digest_all":
@@ -1577,6 +1579,9 @@ func (h *Handler) mainKeyboard() *tgbotapi.InlineKeyboardMarkup {
 			tgbotapi.NewInlineKeyboardButtonData("🛒 Подписка", "billing_subscribe"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💬 Обратная связь", "feedback"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🌍 Часовой пояс", "set_timezone"),
 			tgbotapi.NewInlineKeyboardButtonData("ℹ️ Помощь", "help_menu"),
 		),
@@ -1652,6 +1657,7 @@ func (h *Handler) buildStartSections(user domain.User) []string {
 		"• 📰 Получите дайджест за 24 часа кнопкой «Дайджест» или командой /digest_now.",
 		"• 📌 Попробуйте тематический дайджест через «Дайджест по тегам» или /digest_tag новости.",
 		"• 🗓 Настройте автоматическую рассылку кнопкой «Расписание» или /schedule 21:30.",
+		"• 💬 Поделитесь мнением кнопкой «Обратная связь» или командой /feedback.",
 		"• 🌍 Укажите часовой пояс кнопкой «Часовой пояс» или командой /timezone Europe/Moscow.",
 	}
 
